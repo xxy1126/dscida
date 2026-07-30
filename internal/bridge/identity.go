@@ -16,9 +16,18 @@ type controlStatus struct {
 	SessionID         string `json:"session_id"`
 	SessionInstanceID string `json:"session_instance_id"`
 	PID               int    `json:"pid"`
+	TargetKind        string `json:"target_kind"`
 	DSCPath           string `json:"dsc_path"`
 	DSCUUID           string `json:"dsc_uuid"`
 	MainModule        string `json:"main_module"`
+	SourcePath        string `json:"source_path"`
+	InputPath         string `json:"input_path"`
+	InputSHA256       string `json:"input_sha256"`
+	InputSize         int64  `json:"input_size"`
+	BinaryFormat      string `json:"binary_format"`
+	Architecture      string `json:"architecture"`
+	IDAProcessor      string `json:"ida_processor"`
+	MachOUUID         string `json:"macho_uuid"`
 	IDA               struct {
 		IDBPath string `json:"idb_path"`
 	} `json:"ida"`
@@ -57,11 +66,26 @@ func verifyControlIdentity(ctx context.Context, session *store.Session) error {
 		status.SessionID != session.SessionID ||
 		status.SessionInstanceID != session.SessionInstanceID ||
 		status.PID != session.IDAPID ||
-		status.DSCUUID != session.DSCUUID ||
-		status.MainModule != session.MainModule ||
-		!store.SamePath(status.DSCPath, session.DSCPath) ||
+		status.TargetKind != store.TargetKind(session) ||
 		!store.SamePath(status.IDA.IDBPath, session.WorkingIDBPath) {
 		return fmt.Errorf("control status identity mismatch")
+	}
+	if store.TargetKind(session) == store.TargetBinary {
+		if status.DSCPath != "" || status.DSCUUID != "" || status.MainModule != "" ||
+			!store.SamePath(status.SourcePath, session.SourcePath) ||
+			!store.SamePath(status.InputPath, session.InputPath) ||
+			status.InputSHA256 != session.InputSHA256 || status.InputSize != session.InputSize ||
+			status.BinaryFormat != session.BinaryFormat ||
+			status.Architecture != session.Architecture ||
+			status.IDAProcessor != session.IDAProcessor || status.MachOUUID != session.MachOUUID {
+			return fmt.Errorf("binary control status identity mismatch")
+		}
+	} else if status.SourcePath != "" || status.InputPath != "" || status.InputSHA256 != "" ||
+		status.InputSize != 0 || status.BinaryFormat != "" || status.IDAProcessor != "" ||
+		status.MachOUUID != "" ||
+		status.DSCUUID != session.DSCUUID || status.MainModule != session.MainModule ||
+		!store.SamePath(status.DSCPath, session.DSCPath) {
+		return fmt.Errorf("DSC control status identity mismatch")
 	}
 	return nil
 }
@@ -71,8 +95,12 @@ func verifyMCPIdentity(ctx context.Context, item *downstream, session *store.Ses
 	if err != nil {
 		return err
 	}
+	expectedInput := session.DSCPath
+	if store.TargetKind(session) == store.TargetBinary {
+		expectedInput = session.InputPath
+	}
 	if !store.SamePath(health.IDBPath, session.WorkingIDBPath) ||
-		!store.SamePath(health.InputPath, session.DSCPath) {
+		!store.SamePath(health.InputPath, expectedInput) {
 		return fmt.Errorf("MCP server_health identity mismatch")
 	}
 	return nil

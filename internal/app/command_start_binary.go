@@ -6,15 +6,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/tmo/dscida/internal/cache"
+	"github.com/tmo/dscida/internal/binaryinput"
 	"github.com/tmo/dscida/internal/control"
 	"github.com/tmo/dscida/internal/runner"
 	"github.com/tmo/dscida/internal/store"
 )
 
-func (e *environment) start(args []string) error {
-	set := flagSet("start", e.stderr)
-	modulePath := set.String("module", "", "canonical DSC module path")
+func (e *environment) startBinary(args []string) error {
+	set := flagSet("start-binary", e.stderr)
 	sessionID := set.String("session", "", "preferred session ID")
 	outputDir := set.String("output-dir", "", "state and session root")
 	idaPath := set.String("ida-path", "", "idat executable or Contents/MacOS directory")
@@ -28,11 +27,8 @@ func (e *environment) start(args []string) error {
 	if err := parseInterspersed(set, args); err != nil {
 		return err
 	}
-	if err := requireArgs(set, 1, "dscida start <DSC> --module <PATH>"); err != nil {
+	if err := requireArgs(set, 1, "dscida start-binary <INPUT>"); err != nil {
 		return err
-	}
-	if *modulePath == "" {
-		return fmt.Errorf("--module is required")
 	}
 	if *resume && *replace {
 		return fmt.Errorf("--resume and --replace are mutually exclusive")
@@ -42,14 +38,6 @@ func (e *environment) start(args []string) error {
 	}
 	if *port < 0 || *port > 65535 {
 		return fmt.Errorf("invalid port: %d", *port)
-	}
-	cacheInfo, err := cache.Open(set.Arg(0))
-	if err != nil {
-		return err
-	}
-	module, err := cacheInfo.Exact(*modulePath)
-	if err != nil {
-		return err
 	}
 	idat, err := runner.ResolveIDA(*idaPath)
 	if err != nil {
@@ -78,9 +66,19 @@ func (e *environment) start(args []string) error {
 	defer unlockLifecycle()
 	if existing, loadErr := st.LoadSession(*sessionID); loadErr == nil {
 		if *resume {
-			if existing.DSCPath != cacheInfo.Path || existing.DSCUUID != cacheInfo.UUID ||
-				existing.MainModule != module.ModulePath {
-				return fmt.Errorf("resume identity does not match DSC/module arguments")
+			if store.TargetKind(existing) != store.TargetBinary {
+				return fmt.Errorf("binary_identity_mismatch: session is not a binary target")
+			}
+			canonical, err := filepath.EvalSymlinks(set.Arg(0))
+			if err != nil {
+				return fmt.Errorf("binary_identity_mismatch: %w", err)
+			}
+			canonical, _ = filepath.Abs(canonical)
+			if !store.SamePath(canonical, existing.SourcePath) {
+				return fmt.Errorf("binary_identity_mismatch: source path does not match session")
+			}
+			if err := binaryinput.Verify(binaryIdentity(existing)); err != nil {
+				return err
 			}
 			return e.resumeSession(st, existing, &runner.Runner{IDAT: idat}, *host, *port, *timeout, *jsonOutput, *foreground)
 		}
@@ -96,39 +94,38 @@ func (e *environment) start(args []string) error {
 	} else if *resume {
 		return fmt.Errorf("cannot resume session %s: %w", *sessionID, loadErr)
 	}
+	sessionDir := st.SessionDir(*sessionID)
+	identity, err := binaryinput.Stage(set.Arg(0), sessionDir)
+	if err != nil {
+		return err
+	}
 	token, err := store.RandomID("", 32)
 	if err != nil {
 		return err
 	}
-	sessionDir := st.SessionDir(*sessionID)
 	workingIDB := filepath.Join(sessionDir, "runtime", "working.i64")
-	index := int(module.ImageIndex)
 	session := &store.Session{
-		SessionID:          *sessionID,
-		TargetKind:         store.TargetDSC,
-		State:              "loading_target",
-		DSCPath:            cacheInfo.Path,
-		DSCUUID:            cacheInfo.UUID,
-		Architecture:       cacheInfo.Architecture,
-		MainModule:         module.ModulePath,
-		ImageCount:         cacheInfo.ImageCount,
-		LoadedModules:      []string{module.ModulePath},
-		LoadedImageIndexes: nil,
-		WorkingIDBPath:     workingIDB,
-		ControlToken:       token,
+		SessionID: *sessionID, TargetKind: store.TargetBinary, State: "loading_target",
+		SourcePath: identity.SourcePath, InputPath: identity.InputPath,
+		InputSHA256: identity.SHA256, InputSize: identity.Size,
+		BinaryFormat: identity.Format, Architecture: identity.Architecture,
+		IDAProcessor: identity.IDAProcessor, MachOUUID: identity.MachOUUID,
+		WorkingIDBPath: workingIDB,
+		ControlToken:   token,
 	}
 	if err := st.Initialize(session); err != nil {
 		return err
 	}
 	logger := newLogger(sessionDir, e.stderr)
-	logger.event("info", "supervisor", "session_created", "session metadata created", map[string]any{
-		"session_id": session.SessionID, "module_path": module.ModulePath, "image_index": index,
+	logger.event("info", "supervisor", "session_created", "binary session metadata created", map[string]any{
+		"session_id": session.SessionID, "source_path": session.SourcePath,
+		"input_sha256": session.InputSHA256, "binary_format": session.BinaryFormat,
 	})
 	run := &runner.Runner{IDAT: idat}
 	pid, err := run.Launch(launchOptions(session, sessionDir, *host, *port, false))
 	if err != nil {
 		session.State = "failed"
-		st.SaveSession(session)
+		_ = st.SaveSession(session)
 		return err
 	}
 	session.IDAPID = pid
@@ -136,7 +133,6 @@ func (e *environment) start(args []string) error {
 	if err := st.SaveSession(session); err != nil {
 		return failSession(st, session, fmt.Errorf("persist launched IDA ownership: %w", err))
 	}
-	logger.event("info", "ida", "process_started", "headless IDA started", map[string]any{"ida_pid": pid})
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 	ready, err := runner.WaitReady(ctx, sessionDir, pid)
@@ -144,30 +140,23 @@ func (e *environment) start(args []string) error {
 		return failSession(st, session, fmt.Errorf("wait for IDA readiness: %w (see %s)", err, filepath.Join(sessionDir, "logs")))
 	}
 	if ready.SessionID != session.SessionID || ready.SessionInstanceID != session.SessionInstanceID ||
-		ready.TargetKind != store.TargetDSC {
-		return failSession(st, session, fmt.Errorf("IDA ready identity does not match session incarnation"))
+		ready.TargetKind != store.TargetBinary {
+		return failSession(st, session, fmt.Errorf("IDA ready identity does not match binary session"))
 	}
-	if !store.SamePath(ready.IDA.IDBPath, workingIDB) {
-		return failSession(st, session, fmt.Errorf("IDA opened unexpected IDB %q", ready.IDA.IDBPath))
+	if !store.SamePath(ready.IDA.IDBPath, workingIDB) || len(ready.IDA.LoadedImageIndexes) != 0 {
+		return failSession(st, session, fmt.Errorf("IDA published unexpected binary database state"))
 	}
 	if err := store.ValidateEndpointPair(ready.ControlURL, ready.MCPURL); err != nil {
 		return failSession(st, session, fmt.Errorf("IDA ready endpoints: %w", err))
 	}
-	if err := validateLoadedIndexes(ready.IDA.LoadedImageIndexes, cacheInfo.ImageCount, index); err != nil {
-		return failSession(st, session, err)
-	}
 	if err := control.MCPHealth(ctx, ready.MCPURL); err != nil {
 		return failSession(st, session, fmt.Errorf("MCP readiness: %w", err))
 	}
-	session.ControlURL = ready.ControlURL
-	session.MCPURL = ready.MCPURL
-	session.LoadedImageIndexes = append([]int(nil), ready.IDA.LoadedImageIndexes...)
-	reconcileModules(session, cacheInfo)
+	session.ControlURL, session.MCPURL = ready.ControlURL, ready.MCPURL
 	session.State = "checkpointing_initial"
 	if err := st.SaveSession(session); err != nil {
-		return failSession(st, session, fmt.Errorf("persist DSC checkpoint state: %w", err))
+		return failSession(st, session, fmt.Errorf("persist binary checkpoint state: %w", err))
 	}
-	logger.event("info", "mcp", "mcp_ready", "MCP endpoint passed initialize and tools/list", map[string]any{"mcp_url": ready.MCPURL})
 	job, err := st.NewJob(session, "save", "", nil)
 	if err != nil {
 		return failSession(st, session, fmt.Errorf("create initial checkpoint job: %w", err))
@@ -181,24 +170,24 @@ func (e *environment) start(args []string) error {
 	if err != nil {
 		return err
 	}
-	reconcileModules(session, cacheInfo)
-	if err := st.UpdateImplicitModules(session, session.ImplicitlyLoaded); err != nil {
-		return err
-	}
 	result := map[string]any{
 		"success": true, "session_id": session.SessionID,
-		"session_instance_id": session.SessionInstanceID, "state": session.State,
-		"ida_pid": session.IDAPID, "module_path": module.ModulePath, "image_index": index,
+		"session_instance_id": session.SessionInstanceID, "target_kind": store.TargetBinary,
+		"state": session.State, "ida_pid": session.IDAPID, "source_path": session.SourcePath,
+		"input_path": session.InputPath, "input_sha256": session.InputSHA256,
+		"binary_format": session.BinaryFormat, "architecture": session.Architecture,
 		"generation": session.CurrentGeneration, "mcp_url": session.MCPURL,
 		"control_url": session.ControlURL, "session_dir": sessionDir, "job_id": job.JobID,
 	}
-	logger.event("info", "supervisor", "session_ready", "session committed and ready", result)
+	logger.event("info", "supervisor", "session_ready", "binary session committed and ready", result)
 	if *jsonOutput {
 		if err := writeJSON(e.stdout, result); err != nil {
 			return err
 		}
 	} else {
-		fmt.Fprintf(e.stdout, "session: %s\nmodule: %s\nIDA PID: %d\nMCP: %s\ngeneration: %d\n", session.SessionID, module.ModulePath, session.IDAPID, session.MCPURL, session.CurrentGeneration)
+		fmt.Fprintf(e.stdout, "session: %s\ntarget: binary\ninput: %s\nformat: %s\narchitecture: %s\nIDA PID: %d\nMCP: %s\ngeneration: %d\n",
+			session.SessionID, session.SourcePath, session.BinaryFormat, session.Architecture,
+			session.IDAPID, session.MCPURL, session.CurrentGeneration)
 	}
 	if *foreground {
 		for store.ProcessAlive(pid) {
@@ -208,24 +197,26 @@ func (e *environment) start(args []string) error {
 	return nil
 }
 
-func (e *environment) resumeSession(st *store.Store, session *store.Session, run *runner.Runner, host string, port int, timeout time.Duration, jsonOutput, foreground bool) error {
-	current, err := e.resumeCore(st, session, run, host, port, timeout)
-	if err != nil {
-		return err
+func binaryIdentity(session *store.Session) binaryinput.Identity {
+	return binaryinput.Identity{
+		SourcePath: session.SourcePath, InputPath: session.InputPath,
+		SHA256: session.InputSHA256, Size: session.InputSize,
+		Format: session.BinaryFormat, Architecture: session.Architecture,
+		IDAProcessor: session.IDAProcessor, MachOUUID: session.MachOUUID,
 	}
-	result := map[string]any{
-		"success": true, "resumed": true, "session_id": session.SessionID,
-		"session_instance_id": session.SessionInstanceID,
-		"state":               session.State, "ida_pid": session.IDAPID, "generation": current.Generation,
-		"mcp_url": session.MCPURL, "control_url": session.ControlURL,
+}
+
+func launchOptions(session *store.Session, sessionDir, host string, port int, openExisting bool) runner.LaunchOptions {
+	return runner.LaunchOptions{
+		SessionDir: sessionDir, SessionID: session.SessionID,
+		SessionInstanceID: session.SessionInstanceID, TargetKind: store.TargetKind(session),
+		DSCPath: session.DSCPath, DSCUUID: session.DSCUUID, ModulePath: session.MainModule,
+		Arch: session.Architecture, ImageCount: session.ImageCount,
+		SourcePath: session.SourcePath, InputPath: session.InputPath,
+		InputSHA256: session.InputSHA256, InputSize: session.InputSize,
+		BinaryFormat: session.BinaryFormat, MachOUUID: session.MachOUUID,
+		IDAProcessor: session.IDAProcessor,
+		WorkingIDB:   session.WorkingIDBPath, Token: session.ControlToken,
+		Host: host, Port: port, OpenExisting: openExisting,
 	}
-	if err := printResult(e.stdout, jsonOutput, result); err != nil {
-		return err
-	}
-	if foreground {
-		for store.ProcessAlive(session.IDAPID) {
-			time.Sleep(time.Second)
-		}
-	}
-	return nil
 }

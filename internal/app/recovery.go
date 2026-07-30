@@ -146,13 +146,7 @@ func (e *environment) resumeCore(st *store.Store, session *store.Session, run *r
 		return nil, fmt.Errorf("restore current generation: %w", err)
 	}
 	sessionDir := st.SessionDir(session.SessionID)
-	pid, err := run.Launch(runner.LaunchOptions{
-		SessionDir: sessionDir, DSCPath: session.DSCPath, DSCUUID: session.DSCUUID,
-		ModulePath: session.MainModule, Arch: session.Architecture, ImageCount: session.ImageCount,
-		WorkingIDB: session.WorkingIDBPath, SessionID: session.SessionID,
-		SessionInstanceID: session.SessionInstanceID, Token: session.ControlToken, Host: host,
-		Port: port, OpenExisting: true,
-	})
+	pid, err := run.Launch(launchOptions(session, sessionDir, host, port, true))
 	if err != nil {
 		session.State = "recovery_required"
 		_ = st.SaveSession(session)
@@ -169,7 +163,8 @@ func (e *environment) resumeCore(st *store.Store, session *store.Session, run *r
 	if err != nil {
 		return nil, failSession(st, session, fmt.Errorf("wait for resumed IDA: %w", err))
 	}
-	if ready.SessionID != session.SessionID || ready.SessionInstanceID != session.SessionInstanceID {
+	if ready.SessionID != session.SessionID || ready.SessionInstanceID != session.SessionInstanceID ||
+		ready.TargetKind != store.TargetKind(session) {
 		return nil, failSession(st, session, fmt.Errorf("resumed IDA identity does not match session incarnation"))
 	}
 	if !store.SamePath(ready.IDA.IDBPath, session.WorkingIDBPath) {

@@ -21,6 +21,9 @@ import (
 const (
 	SchemaVersion        = 1
 	SessionSchemaVersion = 2
+	CurrentSchemaVersion = 2
+	TargetDSC            = "dsc"
+	TargetBinary         = "binary"
 )
 
 var terminalJobs = map[string]bool{
@@ -62,15 +65,23 @@ type Session struct {
 	SchemaVersion       int      `json:"schema_version"`
 	SessionID           string   `json:"session_id"`
 	SessionInstanceID   string   `json:"session_instance_id,omitempty"`
+	TargetKind          string   `json:"target_kind,omitempty"`
 	State               string   `json:"state"`
-	DSCPath             string   `json:"dsc_path"`
-	DSCUUID             string   `json:"dsc_uuid"`
-	Architecture        string   `json:"architecture"`
-	MainModule          string   `json:"main_module"`
-	ImageCount          int      `json:"image_count"`
-	LoadedModules       []string `json:"loaded_modules"`
-	ImplicitlyLoaded    []string `json:"implicitly_loaded_modules"`
-	LoadedImageIndexes  []int    `json:"committed_loaded_image_indexes"`
+	DSCPath             string   `json:"dsc_path,omitempty"`
+	DSCUUID             string   `json:"dsc_uuid,omitempty"`
+	SourcePath          string   `json:"source_path,omitempty"`
+	InputPath           string   `json:"input_path,omitempty"`
+	InputSHA256         string   `json:"input_sha256,omitempty"`
+	InputSize           int64    `json:"input_size,omitempty"`
+	BinaryFormat        string   `json:"binary_format,omitempty"`
+	Architecture        string   `json:"architecture,omitempty"`
+	IDAProcessor        string   `json:"ida_processor,omitempty"`
+	MachOUUID           string   `json:"macho_uuid,omitempty"`
+	MainModule          string   `json:"main_module,omitempty"`
+	ImageCount          int      `json:"image_count,omitempty"`
+	LoadedModules       []string `json:"loaded_modules,omitempty"`
+	ImplicitlyLoaded    []string `json:"implicitly_loaded_modules,omitempty"`
+	LoadedImageIndexes  []int    `json:"committed_loaded_image_indexes,omitempty"`
 	ActiveJobIDs        []string `json:"active_job_ids"`
 	CurrentGeneration   int      `json:"current_generation"`
 	CurrentPath         string   `json:"current_generation_path,omitempty"`
@@ -116,10 +127,19 @@ type Current struct {
 	Generation         int    `json:"generation"`
 	Path               string `json:"path"`
 	SHA256             string `json:"sha256"`
-	DSCPath            string `json:"dsc_path"`
-	DSCUUID            string `json:"dsc_uuid"`
-	MainModule         string `json:"main_module"`
-	LoadedImageIndexes []int  `json:"loaded_image_indexes"`
+	TargetKind         string `json:"target_kind,omitempty"`
+	DSCPath            string `json:"dsc_path,omitempty"`
+	DSCUUID            string `json:"dsc_uuid,omitempty"`
+	SourcePath         string `json:"source_path,omitempty"`
+	InputPath          string `json:"input_path,omitempty"`
+	InputSHA256        string `json:"input_sha256,omitempty"`
+	InputSize          int64  `json:"input_size,omitempty"`
+	BinaryFormat       string `json:"binary_format,omitempty"`
+	Architecture       string `json:"architecture,omitempty"`
+	IDAProcessor       string `json:"ida_processor,omitempty"`
+	MachOUUID          string `json:"macho_uuid,omitempty"`
+	MainModule         string `json:"main_module,omitempty"`
+	LoadedImageIndexes []int  `json:"loaded_image_indexes,omitempty"`
 	IDAVersion         string `json:"ida_version"`
 	CreatedAt          string `json:"created_at"`
 }
@@ -134,6 +154,7 @@ type Ready struct {
 	Port              int    `json:"port"`
 	MCPURL            string `json:"mcp_url"`
 	ControlURL        string `json:"control_url"`
+	TargetKind        string `json:"target_kind"`
 	IDA               struct {
 		IDBPath            string `json:"idb_path"`
 		LoadedImageBackend string `json:"loaded_image_backend"`
@@ -161,10 +182,49 @@ func New(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Join(absolute, "sessions"), 0o700); err != nil {
+	if err := os.MkdirAll(absolute, 0o700); err != nil {
 		return nil, err
 	}
+	absolute, err = filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensurePrivateDirectory(absolute); err != nil {
+		return nil, fmt.Errorf("state root: %w", err)
+	}
+	sessions := filepath.Join(absolute, "sessions")
+	if err := os.Mkdir(sessions, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	if err := ensurePrivateDirectory(sessions); err != nil {
+		return nil, fmt.Errorf("sessions root: %w", err)
+	}
 	return &Store{Root: absolute}, nil
+}
+
+func ensurePrivateDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("%s is not a real directory", path)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Getuid() {
+		return fmt.Errorf("%s is not owned by the current user", path)
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return err
+	}
+	info, err = os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm() != 0o700 {
+		return fmt.Errorf("%s permissions are %o, expected 0700", path, info.Mode().Perm())
+	}
+	return nil
 }
 
 func (s *Store) SessionDir(id string) string {
@@ -173,7 +233,7 @@ func (s *Store) SessionDir(id string) string {
 
 func (s *Store) Initialize(session *Session) error {
 	dir := s.SessionDir(session.SessionID)
-	for _, subdir := range []string{"generations", "runtime", "jobs", "staging", "recovery", "logs"} {
+	for _, subdir := range []string{"generations", "inputs", "runtime", "jobs", "staging", "recovery", "logs"} {
 		if err := os.MkdirAll(filepath.Join(dir, subdir), 0o700); err != nil {
 			return err
 		}
@@ -185,6 +245,12 @@ func (s *Store) Initialize(session *Session) error {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	session.SchemaVersion = SessionSchemaVersion
+	if session.TargetKind == "" {
+		session.TargetKind = TargetDSC
+	}
+	if err := ValidateTargetIdentity(session); err != nil {
+		return err
+	}
 	instanceID, err := RandomID("instance-", 16)
 	if err != nil {
 		return err
@@ -213,6 +279,12 @@ func (s *Store) LoadSession(id string) (*Session, error) {
 	if session.SchemaVersion == SessionSchemaVersion && !ValidID(session.SessionInstanceID) {
 		return nil, fmt.Errorf("session %s has invalid instance identity", id)
 	}
+	if session.TargetKind == "" {
+		session.TargetKind = TargetDSC
+	}
+	if err := ValidateTargetIdentity(&session); err != nil {
+		return nil, fmt.Errorf("session target identity: %w", err)
+	}
 	if err := validateEndpoint(session.ControlURL, "/control"); err != nil {
 		return nil, fmt.Errorf("invalid persisted control URL: %w", err)
 	}
@@ -223,6 +295,9 @@ func (s *Store) LoadSession(id string) (*Session, error) {
 		if path != "" && !within(s.SessionDir(id), path) {
 			return nil, fmt.Errorf("persisted session path escapes session directory: %s", path)
 		}
+	}
+	if session.InputPath != "" && !within(s.SessionDir(id), session.InputPath) {
+		return nil, fmt.Errorf("persisted binary input path escapes session directory")
 	}
 	var secret Secret
 	if err := ReadJSON(filepath.Join(s.SessionDir(id), "secret.json"), &secret); err != nil {
@@ -236,6 +311,9 @@ func (s *Store) SaveSession(session *Session) error {
 	if session.SchemaVersion == SessionSchemaVersion && !ValidID(session.SessionInstanceID) {
 		return fmt.Errorf("session %s has invalid instance identity", session.SessionID)
 	}
+	if err := ValidateTargetIdentity(session); err != nil {
+		return fmt.Errorf("session target identity: %w", err)
+	}
 	var existing Session
 	sessionPath := filepath.Join(s.SessionDir(session.SessionID), "session.json")
 	if err := ReadJSON(sessionPath, &existing); err == nil {
@@ -243,11 +321,56 @@ func (s *Store) SaveSession(session *Session) error {
 			existing.SessionInstanceID != session.SessionInstanceID {
 			return fmt.Errorf("session %s instance identity is immutable", session.SessionID)
 		}
+		if existing.TargetKind == "" {
+			existing.TargetKind = TargetDSC
+		}
+		if existing.TargetKind != session.TargetKind ||
+			existing.DSCPath != session.DSCPath || existing.DSCUUID != session.DSCUUID ||
+			existing.MainModule != session.MainModule ||
+			existing.SourcePath != session.SourcePath || existing.InputPath != session.InputPath ||
+			existing.InputSHA256 != session.InputSHA256 || existing.InputSize != session.InputSize ||
+			existing.BinaryFormat != session.BinaryFormat ||
+			existing.Architecture != session.Architecture ||
+			existing.IDAProcessor != session.IDAProcessor ||
+			existing.MachOUUID != session.MachOUUID {
+			return fmt.Errorf("session %s target identity is immutable", session.SessionID)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read session before save: %w", err)
 	}
 	session.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return WriteJSON(sessionPath, session, 0o600)
+}
+
+func TargetKind(session *Session) string {
+	if session.TargetKind == "" {
+		return TargetDSC
+	}
+	return session.TargetKind
+}
+
+func ValidateTargetIdentity(session *Session) error {
+	switch TargetKind(session) {
+	case TargetDSC:
+		if session.DSCPath == "" || session.DSCUUID == "" || session.MainModule == "" ||
+			session.SourcePath != "" || session.InputPath != "" || session.InputSHA256 != "" ||
+			session.InputSize != 0 || session.BinaryFormat != "" || session.IDAProcessor != "" ||
+			session.MachOUUID != "" {
+			return fmt.Errorf("invalid DSC tagged identity")
+		}
+	case TargetBinary:
+		if session.SourcePath == "" || session.InputPath == "" || len(session.InputSHA256) != 64 ||
+			session.InputSize <= 0 || (session.BinaryFormat != "macho" && session.BinaryFormat != "elf") ||
+			session.IDAProcessor == "" ||
+			session.DSCPath != "" || session.DSCUUID != "" || session.MainModule != "" ||
+			session.ImageCount != 0 || len(session.LoadedImageIndexes) != 0 ||
+			len(session.LoadedModules) != 0 || len(session.ImplicitlyLoaded) != 0 {
+			return fmt.Errorf("invalid binary tagged identity")
+		}
+	default:
+		return fmt.Errorf("unknown target_kind %q", session.TargetKind)
+	}
+	return nil
 }
 
 func (s *Store) ListSessions() ([]Session, error) {
@@ -483,12 +606,21 @@ func (s *Store) Commit(session *Session, job *Job, snapshot string, indexes []in
 		return nil, err
 	}
 	current := &Current{
-		SchemaVersion:      SchemaVersion,
+		SchemaVersion:      CurrentSchemaVersion,
 		Generation:         next,
 		Path:               generationPath,
 		SHA256:             sum,
+		TargetKind:         TargetKind(session),
 		DSCPath:            session.DSCPath,
 		DSCUUID:            session.DSCUUID,
+		SourcePath:         session.SourcePath,
+		InputPath:          session.InputPath,
+		InputSHA256:        session.InputSHA256,
+		InputSize:          session.InputSize,
+		BinaryFormat:       session.BinaryFormat,
+		Architecture:       session.Architecture,
+		IDAProcessor:       session.IDAProcessor,
+		MachOUUID:          session.MachOUUID,
 		MainModule:         session.MainModule,
 		LoadedImageIndexes: append([]int(nil), indexes...),
 		IDAVersion:         idaVersion,
@@ -523,11 +655,32 @@ func (s *Store) LoadCurrent(session *Session) (*Current, error) {
 	if err := ReadJSON(filepath.Join(s.SessionDir(session.SessionID), "current.json"), &current); err != nil {
 		return nil, err
 	}
-	if current.SchemaVersion != SchemaVersion || current.Generation <= 0 ||
-		current.DSCPath != session.DSCPath ||
-		current.DSCUUID != session.DSCUUID ||
-		current.MainModule != session.MainModule {
+	if current.Generation <= 0 {
 		return nil, fmt.Errorf("current generation identity mismatch")
+	}
+	switch current.SchemaVersion {
+	case SchemaVersion:
+		if TargetKind(session) != TargetDSC || current.TargetKind != "" ||
+			current.DSCPath != session.DSCPath || current.DSCUUID != session.DSCUUID ||
+			current.MainModule != session.MainModule ||
+			current.SourcePath != "" || current.InputPath != "" || current.InputSHA256 != "" ||
+			current.InputSize != 0 || current.BinaryFormat != "" || current.IDAProcessor != "" ||
+			current.MachOUUID != "" {
+			return nil, fmt.Errorf("legacy current generation identity mismatch")
+		}
+	case CurrentSchemaVersion:
+		if current.TargetKind != TargetKind(session) ||
+			current.DSCPath != session.DSCPath || current.DSCUUID != session.DSCUUID ||
+			current.MainModule != session.MainModule ||
+			current.SourcePath != session.SourcePath || current.InputPath != session.InputPath ||
+			current.InputSHA256 != session.InputSHA256 || current.InputSize != session.InputSize ||
+			current.BinaryFormat != session.BinaryFormat ||
+			current.Architecture != session.Architecture ||
+			current.IDAProcessor != session.IDAProcessor || current.MachOUUID != session.MachOUUID {
+			return nil, fmt.Errorf("current generation target identity mismatch")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported current generation schema %d", current.SchemaVersion)
 	}
 	expectedPath := filepath.Join(
 		s.SessionDir(session.SessionID), "generations",

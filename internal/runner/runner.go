@@ -31,7 +31,16 @@ type Validation struct {
 	LoadedImageBackend       string `json:"loaded_image_backend"`
 	LoadedImageIndexes       []int  `json:"loaded_image_indices"`
 	ExpectedLoadedImageIndex []int  `json:"expected_loaded_image_indices"`
-	Error                    string `json:"error"`
+	TargetKind               string `json:"target_kind"`
+	InputPath                string `json:"input_path"`
+	InputSHA256              string `json:"input_sha256"`
+	NativeInput              struct {
+		InputPath   string `json:"input_path"`
+		InputSHA256 string `json:"input_sha256"`
+		FileType    int    `json:"filetype"`
+		Processor   string `json:"processor"`
+	} `json:"native_input"`
+	Error string `json:"error"`
 }
 
 type LaunchRecord struct {
@@ -101,11 +110,19 @@ type LaunchOptions struct {
 	SessionDir        string
 	SessionID         string
 	SessionInstanceID string
+	TargetKind        string
 	DSCPath           string
 	DSCUUID           string
 	ModulePath        string
 	Arch              string
 	ImageCount        int
+	SourcePath        string
+	InputPath         string
+	InputSHA256       string
+	InputSize         int64
+	BinaryFormat      string
+	IDAProcessor      string
+	MachOUUID         string
 	WorkingIDB        string
 	Token             string
 	Host              string
@@ -132,6 +149,8 @@ func (r *Runner) Launch(options LaunchOptions) (int, error) {
 	args := []string{"-A", "-a-", "-P+", "-L" + filepath.Join(logDir, "ida-message.log"), "-S" + sidecar}
 	if options.OpenExisting {
 		args = append(args, options.WorkingIDB)
+	} else if options.TargetKind == store.TargetBinary {
+		args = append(args, "-o"+options.WorkingIDB, options.InputPath)
 	} else {
 		loader := fmt.Sprintf("Apple DYLD cache for %s (select module(s))", options.Arch)
 		args = append(args, "-T"+loader, "-o"+options.WorkingIDB, options.DSCPath)
@@ -149,12 +168,21 @@ func (r *Runner) Launch(options LaunchOptions) (int, error) {
 		"DSCIDA_SESSION_ID="+options.SessionID,
 		"DSCIDA_SESSION_INSTANCE_ID="+options.SessionInstanceID,
 		"DSCIDA_CONTROL_TOKEN="+options.Token,
+		"DSCIDA_TARGET_KIND="+options.TargetKind,
 		"DSCIDA_IMAGE_COUNT="+strconv.Itoa(options.ImageCount),
 		"DSCIDA_DSC_PATH="+options.DSCPath,
 		"DSCIDA_DSC_UUID="+options.DSCUUID,
 		"DSCIDA_MAIN_MODULE="+options.ModulePath,
+		"DSCIDA_SOURCE_PATH="+options.SourcePath,
+		"DSCIDA_INPUT_PATH="+options.InputPath,
+		"DSCIDA_INPUT_SHA256="+options.InputSHA256,
+		"DSCIDA_INPUT_SIZE="+strconv.FormatInt(options.InputSize, 10),
+		"DSCIDA_BINARY_FORMAT="+options.BinaryFormat,
+		"DSCIDA_ARCHITECTURE="+options.Arch,
+		"DSCIDA_IDA_PROCESSOR="+options.IDAProcessor,
+		"DSCIDA_MACHO_UUID="+options.MachOUUID,
 	)
-	if !options.OpenExisting {
+	if !options.OpenExisting && options.TargetKind != store.TargetBinary {
 		command.Env = append(command.Env, "IDA_DYLD_CACHE_MODULE="+options.ModulePath)
 	}
 	if err := command.Start(); err != nil {
@@ -217,7 +245,7 @@ func WaitReady(ctx context.Context, sessionDir string, pid int) (*store.Ready, e
 	}
 }
 
-func (r *Runner) Validate(ctx context.Context, sessionDir, snapshot string, expected []int, imageCount int, dscPath, dscUUID, mainModule string) (*Validation, error) {
+func (r *Runner) Validate(ctx context.Context, sessionDir, snapshot string, expected []int, session *store.Session) (*Validation, error) {
 	_, validator, err := r.PrepareScripts(sessionDir)
 	if err != nil {
 		return nil, err
@@ -235,6 +263,9 @@ func (r *Runner) Validate(ctx context.Context, sessionDir, snapshot string, expe
 	}
 	resultPath := filepath.Join(validationDir, "result.json")
 	expected = append([]int(nil), expected...)
+	if expected == nil {
+		expected = []int{}
+	}
 	sort.Ints(expected)
 	expectedJSON, _ := json.Marshal(expected)
 	logFile, err := os.OpenFile(filepath.Join(validationDir, "validator.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -245,11 +276,20 @@ func (r *Runner) Validate(ctx context.Context, sessionDir, snapshot string, expe
 	command.Env = append(os.Environ(),
 		"TVHEADLESS=1",
 		"DSCIDA_VALIDATION_RESULT="+resultPath,
+		"DSCIDA_TARGET_KIND="+store.TargetKind(session),
 		"DSCIDA_EXPECTED_INDEXES="+string(expectedJSON),
-		"DSCIDA_IMAGE_COUNT="+strconv.Itoa(imageCount),
-		"DSCIDA_DSC_PATH="+dscPath,
-		"DSCIDA_DSC_UUID="+dscUUID,
-		"DSCIDA_MAIN_MODULE="+mainModule,
+		"DSCIDA_IMAGE_COUNT="+strconv.Itoa(session.ImageCount),
+		"DSCIDA_DSC_PATH="+session.DSCPath,
+		"DSCIDA_DSC_UUID="+session.DSCUUID,
+		"DSCIDA_MAIN_MODULE="+session.MainModule,
+		"DSCIDA_SOURCE_PATH="+session.SourcePath,
+		"DSCIDA_INPUT_PATH="+session.InputPath,
+		"DSCIDA_INPUT_SHA256="+session.InputSHA256,
+		"DSCIDA_INPUT_SIZE="+strconv.FormatInt(session.InputSize, 10),
+		"DSCIDA_BINARY_FORMAT="+session.BinaryFormat,
+		"DSCIDA_ARCHITECTURE="+session.Architecture,
+		"DSCIDA_IDA_PROCESSOR="+session.IDAProcessor,
+		"DSCIDA_MACHO_UUID="+session.MachOUUID,
 	)
 	command.Stdout = logFile
 	command.Stderr = logFile
@@ -262,19 +302,26 @@ func (r *Runner) Validate(ctx context.Context, sessionDir, snapshot string, expe
 		}
 		return nil, fmt.Errorf("read validator result: %w", err)
 	}
-	if runErr != nil && !result.Success {
-		return &result, fmt.Errorf("validator failed: %v: %s", runErr, result.Error)
+	if err := validateProcessResult(runErr, &result); err != nil {
+		return &result, err
 	}
-	if !result.Success {
-		return &result, fmt.Errorf("validation failed: %s", result.Error)
-	}
-	if !equalInts(result.LoadedImageIndexes, expected) {
+	if store.TargetKind(session) == store.TargetDSC && !equalInts(result.LoadedImageIndexes, expected) {
 		return &result, fmt.Errorf("validator index mismatch: got %v, expected %v", result.LoadedImageIndexes, expected)
 	}
 	if err := os.RemoveAll(validationDir); err != nil {
 		return &result, fmt.Errorf("remove successful validation copy: %w", err)
 	}
 	return &result, nil
+}
+
+func validateProcessResult(runErr error, result *Validation) error {
+	if runErr != nil {
+		return fmt.Errorf("validator did not exit cleanly: %v: %s", runErr, result.Error)
+	}
+	if !result.Success {
+		return fmt.Errorf("validation failed: %s", result.Error)
+	}
+	return nil
 }
 
 func CopyGenerationToWorking(source, destination string) error {

@@ -35,7 +35,7 @@ func TestBridgePublishesToolsForwardsAndRejectsReplacement(t *testing.T) {
 				"success": true, "schema_version": 2,
 				"session_id":          session.SessionID,
 				"session_instance_id": session.SessionInstanceID,
-				"pid":                 os.Getpid(), "dsc_path": session.DSCPath,
+				"pid":                 os.Getpid(), "target_kind": store.TargetDSC, "dsc_path": session.DSCPath,
 				"dsc_uuid": session.DSCUUID, "main_module": session.MainModule,
 				"ida": map[string]any{"idb_path": session.WorkingIDBPath},
 			})

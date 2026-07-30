@@ -3,10 +3,18 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func testDSCSession(id, state string) *Session {
+	return &Session{
+		SessionID: id, TargetKind: TargetDSC, State: state, ControlToken: "secret",
+		DSCPath: "/cache", DSCUUID: "UUID", MainModule: "/module",
+	}
+}
 
 func TestWriteJSONReplacesAtomically(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
@@ -32,12 +40,49 @@ func TestWriteJSONReplacesAtomically(t *testing.T) {
 	}
 }
 
+func TestNewMakesStateAndSessionsPrivate(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "sessions"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	st, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{st.Root, filepath.Join(st.Root, "sessions")} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("%s mode=%v", path, info.Mode())
+		}
+	}
+}
+
+func TestNewRejectsSymlinkedSessionsRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	outside := t.TempDir()
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(root); err == nil {
+		t.Fatal("symlinked sessions root unexpectedly accepted")
+	}
+}
+
 func TestInitializeCreatesSchemaV2SessionInstanceIdentity(t *testing.T) {
 	st, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := &Session{SessionID: "identity", State: "creating", ControlToken: "secret"}
+	session := testDSCSession("identity", "creating")
 	if err := st.Initialize(session); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +110,7 @@ func TestSaveSessionRejectsInstanceIdentityChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := &Session{SessionID: "immutable", State: "creating", ControlToken: "secret"}
+	session := testDSCSession("immutable", "creating")
 	if err := st.Initialize(session); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +145,7 @@ func TestClearHistoricalJobDoesNotChangeSessionState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := &Session{SessionID: "historical", State: "stopped", ControlToken: "secret"}
+	session := testDSCSession("historical", "stopped")
 	if err := st.Initialize(session); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +197,7 @@ func TestNewJobMakesSessionBusy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := &Session{SessionID: "test", State: "ready", ControlToken: "secret"}
+	session := testDSCSession("test", "ready")
 	if err := st.Initialize(session); err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +219,7 @@ func TestConcurrentNewJobHasSingleWinner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := &Session{SessionID: "concurrent", State: "ready", ControlToken: "secret"}
+	session := testDSCSession("concurrent", "ready")
 	if err := st.Initialize(session); err != nil {
 		t.Fatal(err)
 	}
@@ -245,6 +290,63 @@ func TestLoadCurrentDetectsTampering(t *testing.T) {
 	}
 	if _, err := st.LoadCurrent(session); err == nil {
 		t.Fatal("tampered generation unexpectedly accepted")
+	}
+}
+
+func TestBinaryCurrentRequiresCompleteTaggedIdentity(t *testing.T) {
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionDir := st.SessionDir("binary-current")
+	inputPath := filepath.Join(sessionDir, "inputs", strings.Repeat("a", 64)+"__input")
+	session := &Session{
+		SessionID: "binary-current", TargetKind: TargetBinary, State: "ready",
+		ControlToken: "secret", SourcePath: "/source/input", InputPath: inputPath,
+		InputSHA256: strings.Repeat("a", 64), InputSize: 4,
+		BinaryFormat: "elf", Architecture: "em_x86_64", IDAProcessor: "pc",
+	}
+	if err := st.Initialize(session); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inputPath, []byte("ELF!"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	generation := filepath.Join(sessionDir, "generations", "000001.i64")
+	if err := os.WriteFile(generation, []byte("idb"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := SHA256File(generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := &Current{
+		SchemaVersion: CurrentSchemaVersion, Generation: 1, Path: generation,
+		SHA256: sum, TargetKind: TargetBinary, SourcePath: session.SourcePath,
+		InputPath: session.InputPath, InputSHA256: session.InputSHA256,
+		InputSize: session.InputSize, BinaryFormat: session.BinaryFormat,
+		Architecture: session.Architecture, IDAProcessor: session.IDAProcessor,
+	}
+	if err := WriteJSON(filepath.Join(sessionDir, "current.json"), current, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.LoadCurrent(session); err != nil {
+		t.Fatalf("valid binary current rejected: %v", err)
+	}
+	current.SourcePath = "/different/source"
+	if err := WriteJSON(filepath.Join(sessionDir, "current.json"), current, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.LoadCurrent(session); err == nil {
+		t.Fatal("mismatched binary current source unexpectedly accepted")
+	}
+	current.SourcePath = session.SourcePath
+	current.SchemaVersion = SchemaVersion
+	if err := WriteJSON(filepath.Join(sessionDir, "current.json"), current, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.LoadCurrent(session); err == nil {
+		t.Fatal("legacy current schema unexpectedly accepted for binary target")
 	}
 }
 

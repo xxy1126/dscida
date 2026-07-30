@@ -30,6 +30,15 @@ func validateLoadedIndexes(indexes []int, imageCount, primary int) error {
 }
 
 func expectedIndexes(session *store.Session, job *store.Job) ([]int, error) {
+	if store.TargetKind(session) == store.TargetBinary {
+		if job.Operation == "add" {
+			return nil, fmt.Errorf("operation_not_supported_for_target: add requires a DSC session")
+		}
+		if len(session.LoadedImageIndexes) != 0 || len(job.LoadedImageIndexes) != 0 {
+			return nil, fmt.Errorf("binary session reported DSC loaded-image indexes")
+		}
+		return nil, nil
+	}
 	expected := append([]int(nil), session.LoadedImageIndexes...)
 	if job.Operation == "add" {
 		if job.ImageIndex == nil {
@@ -59,6 +68,16 @@ func expectedIndexes(session *store.Session, job *store.Job) ([]int, error) {
 		}
 	}
 	return expected, nil
+}
+
+func validateObservedIndexesForTarget(session *store.Session, observed, required []int) ([]int, error) {
+	if store.TargetKind(session) == store.TargetBinary {
+		if len(observed) != 0 || len(required) != 0 {
+			return nil, fmt.Errorf("binary session reported DSC loaded-image indexes")
+		}
+		return nil, nil
+	}
+	return validateObservedIndexes(observed, required, session.ImageCount)
 }
 
 func sameIndexes(observed, expected []int) bool {

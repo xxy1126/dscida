@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 
 import ida_auto
 import ida_funcs
+import ida_ida
+import ida_idp
 import ida_kernwin
 import ida_loader
 import ida_nalt
@@ -29,9 +31,18 @@ SESSION_ID = os.environ["DSCIDA_SESSION_ID"]
 SESSION_INSTANCE_ID = os.environ["DSCIDA_SESSION_INSTANCE_ID"]
 READY_PATH = os.path.join(SESSION_DIR, "runtime", "ready.json")
 TOKEN = os.environ["DSCIDA_CONTROL_TOKEN"]
-DSC_PATH = os.path.realpath(os.environ["DSCIDA_DSC_PATH"])
-DSC_UUID = os.environ["DSCIDA_DSC_UUID"]
-MAIN_MODULE = os.environ["DSCIDA_MAIN_MODULE"]
+TARGET_KIND = os.environ.get("DSCIDA_TARGET_KIND", "dsc") or "dsc"
+DSC_PATH = os.path.realpath(os.environ.get("DSCIDA_DSC_PATH", ""))
+DSC_UUID = os.environ.get("DSCIDA_DSC_UUID", "")
+MAIN_MODULE = os.environ.get("DSCIDA_MAIN_MODULE", "")
+SOURCE_PATH = os.path.realpath(os.environ.get("DSCIDA_SOURCE_PATH", ""))
+INPUT_PATH = os.path.realpath(os.environ.get("DSCIDA_INPUT_PATH", ""))
+INPUT_SHA256 = os.environ.get("DSCIDA_INPUT_SHA256", "")
+INPUT_SIZE = int(os.environ.get("DSCIDA_INPUT_SIZE", "0"))
+BINARY_FORMAT = os.environ.get("DSCIDA_BINARY_FORMAT", "")
+ARCHITECTURE = os.environ.get("DSCIDA_ARCHITECTURE", "")
+IDA_PROCESSOR = os.environ.get("DSCIDA_IDA_PROCESSOR", "")
+MACHO_UUID = os.environ.get("DSCIDA_MACHO_UUID", "")
 JOB_ID_RE = re.compile(r"^job-[0-9a-f]{16,64}$")
 MAX_BODY = 65536
 TERMINAL_STATES = {
@@ -129,6 +140,8 @@ def update_job(job_id, state, **fields):
 
 
 def loaded_image_indices():
+    if TARGET_KIND != "dsc":
+        return "not_applicable", []
     try:
         import ida_dscu
 
@@ -150,21 +163,68 @@ def loaded_image_indices():
 def ensure_database_identity():
     node = ida_netnode.netnode()
     node.create("$ dscida")
-    expected = (
-        DSC_PATH,
-        DSC_UUID,
-        MAIN_MODULE,
-        SESSION_ID,
-        SESSION_INSTANCE_ID,
-    )
-    for index, value in enumerate(expected):
-        existing = node.supstr(index)
-        if existing and existing != value:
-            raise RuntimeError(
-                f"dscida database identity mismatch at field {index}: "
-                f"{existing!r} != {value!r}"
-            )
-        node.supset(index, value)
+    if TARGET_KIND == "dsc":
+        expected = (
+            DSC_PATH,
+            DSC_UUID,
+            MAIN_MODULE,
+            SESSION_ID,
+            SESSION_INSTANCE_ID,
+        )
+        for index, value in enumerate(expected):
+            existing = node.supstr(index)
+            if existing and existing != value:
+                raise RuntimeError(
+                    f"dscida database identity mismatch at field {index}: "
+                    f"{existing!r} != {value!r}"
+                )
+            node.supset(index, value)
+    identity = target_identity()
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    existing = node.supstr(10)
+    if existing and existing != encoded:
+        raise RuntimeError("dscida tagged database identity mismatch")
+    node.supset(10, encoded)
+
+
+def native_input_metadata():
+    digest = ida_nalt.retrieve_input_file_sha256()
+    return {
+        "input_path": os.path.realpath(ida_nalt.get_input_file_path()),
+        "input_sha256": bytes(digest).hex(),
+        "filetype": int(ida_ida.inf_get_filetype()),
+        "processor": ida_idp.get_idp_name(),
+    }
+
+
+def target_identity():
+    common = {
+        "target_kind": TARGET_KIND,
+        "session_id": SESSION_ID,
+        "session_instance_id": SESSION_INSTANCE_ID,
+    }
+    if TARGET_KIND == "binary":
+        common.update(
+            {
+                "source_path": SOURCE_PATH,
+                "input_path": INPUT_PATH,
+                "input_sha256": INPUT_SHA256,
+                "input_size": INPUT_SIZE,
+                "binary_format": BINARY_FORMAT,
+                "architecture": ARCHITECTURE,
+                "ida_processor": IDA_PROCESSOR,
+                "macho_uuid": MACHO_UUID,
+            }
+        )
+    else:
+        common.update(
+            {
+                "dsc_path": DSC_PATH,
+                "dsc_uuid": DSC_UUID,
+                "main_module": MAIN_MODULE,
+            }
+        )
+    return common
 
 
 def snapshot():
@@ -185,6 +245,7 @@ def snapshot():
         "thread_id": threading.get_ident(),
         "loaded_image_backend": backend,
         "loaded_image_indices": indexes,
+        "native_input": native_input_metadata(),
     }
 
 
@@ -260,17 +321,24 @@ class UnifiedHandler(IdaMcpHttpRequestHandler):
         if path == "/control/ping":
             self._send_json(200, {"success": True, "pid": os.getpid()})
         elif path in ("/control/status", "/control/loaded-modules"):
+            if path == "/control/loaded-modules" and TARGET_KIND != "dsc":
+                self._send_json(
+                    409,
+                    {
+                        "success": False,
+                        "error": "operation_not_supported_for_target",
+                        "target_kind": TARGET_KIND,
+                    },
+                )
+                return
+            identity = target_identity()
             self._send_json(
                 200,
                 {
                     "success": True,
                     "schema_version": 2,
-                    "session_id": SESSION_ID,
-                    "session_instance_id": SESSION_INSTANCE_ID,
                     "pid": os.getpid(),
-                    "dsc_path": DSC_PATH,
-                    "dsc_uuid": DSC_UUID,
-                    "main_module": MAIN_MODULE,
+                    **identity,
                     "ida": snapshot(),
                 },
             )
@@ -310,6 +378,16 @@ class UnifiedHandler(IdaMcpHttpRequestHandler):
                 return
             body = self._body()
             if path == "/control/load-module":
+                if TARGET_KIND != "dsc":
+                    self._send_json(
+                        409,
+                        {
+                            "success": False,
+                            "error": "operation_not_supported_for_target",
+                            "target_kind": TARGET_KIND,
+                        },
+                    )
+                    return
                 job_id, record, is_new = self._accept_job(body, "add")
                 if record.get("module_path") != body.get("module_path"):
                     raise ValueError("module_path mismatch")
@@ -404,6 +482,7 @@ def publish_endpoint():
         "state": "ready",
         "session_id": SESSION_ID,
         "session_instance_id": SESSION_INSTANCE_ID,
+        "target_kind": TARGET_KIND,
         "pid": os.getpid(),
         "host": actual_host,
         "port": actual_port,

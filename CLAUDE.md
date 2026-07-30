@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-`dscida` is a macOS Go CLI that opens selected images from an Apple `dyld_shared_cache` (DSC) in headless IDA Pro. It keeps one `idat` process alive per session, allows incremental DSC module loading into the same database, and exposes the unmodified `ida-pro-mcp` endpoint for AI-assisted reverse engineering.
+`dscida` is a macOS Go CLI that opens either selected images from an Apple `dyld_shared_cache` (DSC), or a standalone binary (thin Mach-O / LE ELF), in headless IDA Pro. It keeps one `idat` process alive per session, allows incremental DSC module loading into the same database, and exposes the unmodified `ida-pro-mcp` endpoint for AI-assisted reverse engineering. Standalone binary sessions use IDA's native loader; DSC sessions use DSCU.
 
 The full protocol and safety model are specified in `../SPEC.md`.
 
@@ -31,7 +31,7 @@ All Go tests are offline — they use temp directories and mock paths, never a r
 
 ## Three-layer architecture
 
-1. **Go supervisor** (`cmd/dscida`, `internal/app`) — parses DSC metadata via `github.com/blacktop/ipsw/pkg/dyld`, owns sessions/jobs/generations, launches `idat` as a child process, performs snapshot validation, and handles recovery/rollback.
+1. **Go supervisor** (`cmd/dscida`, `internal/app`) — parses DSC metadata via `github.com/blacktop/ipsw/pkg/dyld` or inspects standalone binaries via `internal/binaryinput`, owns sessions/jobs/generations, launches `idat` as a child process, performs snapshot validation, and handles recovery/rollback. Sessions carry a `TargetKind` field (`dsc` or `binary`) that discriminates the validation strategy.
 
 2. **Embedded IDAPython sidecar** (`internal/assets/dscida_sidecar.py`) — runs inside the persistent headless IDA process. Serves authenticated `/control/*` HTTP routes (`/control/ping`, `/control/load-module`, `/control/save`, `/control/snapshot`, `/control/shutdown`) on a loopback port. Publishes `ready.json` to the session runtime directory when IDA finishes auto-analysis. The sidecar is compiled into the Go binary via `//go:embed`.
 
@@ -57,7 +57,8 @@ The lifecycle separation is: `AI client → stable bridge → /mcp` (analysis),
 | `internal/app/validation.go` | Loaded-image index validation, expected-index computation, DSCU backend consistency checks |
 | `internal/store/store.go` | Durable JSON state: Session, Job, Current (generation pointer), atomic writes via temp+rename, file locking |
 | `internal/cache/cache.go` | Reads DSC metadata via `ipsw/pkg/dyld`, canonical module resolution, filtering |
-| `internal/runner/runner.go` | Launches headless `idat` (both fresh and open-existing), runs separate validator processes, snapshot copying |
+| `internal/binaryinput/` | Stages standalone binaries as immutable SHA-256-named copies, inspects Mach-O/ELF format, rejects fat/encrypted binaries |
+| `internal/runner/runner.go` | Launches headless `idat` (fresh DSC, fresh binary, and open-existing), runs separate validator processes, snapshot copying |
 | `internal/control/client.go` | HTTP client for `/control/*` routes and MCP health checks (initialize + tools/list + server_health) |
 | `internal/bridge/` | MCP stdio server, Streamable HTTP client, endpoint following, and fail-closed identity checks |
 | `internal/assets/assets.go` | Embeds `dscida_sidecar.py` and `dscida_validator.py` via `//go:embed` |
@@ -68,7 +69,7 @@ Every mutation (start, add, save) goes through a durable job state machine:
 
 1. Job is created in `queued` state and durably written to `jobs/<id>.json`.
 2. Job transitions through: `queued → running_dscu → running_analysis → snapshotting → validating → committing → succeeded`.
-3. On `validating`, a **separate headless `idat` process** opens a copy of the snapshot and independently verifies DSC identity and loaded-image indexes match expectations. This catches DSCU bugs, IDA corruption, and stale state.
+3. On `validating`, a **separate headless `idat` process** opens a copy of the snapshot and independently verifies the target identity. For DSC sessions this means DSC UUID and loaded-image indexes. For binary sessions this means the exact input SHA-256, file size, format, and IDA processor match the session's recorded identity. This catches DSCU bugs, IDA corruption, and stale state.
 4. Only after validation passes is the snapshot atomically committed as a read-only generation (`generations/NNNNNN.i64`, mode 0400) and `current.json` advanced with a SHA256 checksum.
 5. If any step fails after IDA may have mutated the database, the supervisor automatically attempts rollback to the last verified generation and restarts the MCP endpoint. If automatic recovery fails, the session enters `recovery_required`.
 
@@ -84,20 +85,22 @@ The standard Go `flag` package stops at the first positional argument. `parseInt
 
 ```
 DSCIDA_HOME/sessions/<id>/
-  session.json          orchestration state (Session struct)
+  session.json          orchestration state (Session struct, includes TargetKind)
   secret.json           control token (mode 0600)
   current.json          SHA256-authenticated generation pointer
   generations/          verified read-only packed IDBs (NNNNNN.i64, mode 0400)
+  inputs/               immutable SHA-256-named standalone binary copies (binary sessions only)
   runtime/              live writable IDB, ready.json, scripts/
   jobs/                 durable job records
   staging/              snapshot candidates and validator working dirs
   recovery/             prior runtime artifacts saved during rollback
-  logs/                 idat stdout/stderr, IDA message log
+  logs/                 idat stdout/stderr, IDA message log, MCP bridge log
 ```
 
 ## Environment variables
 
 - `DSCIDA_HOME` — overrides the default state root (`~/Library/Application Support/dscida`).
-- The Go supervisor passes configuration to the Python sidecar via `DSCIDA_HOST`, `DSCIDA_PORT`, `DSCIDA_SESSION_DIR`, `DSCIDA_SESSION_ID`, `DSCIDA_SESSION_INSTANCE_ID`, `DSCIDA_CONTROL_TOKEN`, `DSCIDA_IMAGE_COUNT`, `DSCIDA_DSC_PATH`, `DSCIDA_DSC_UUID`, `DSCIDA_MAIN_MODULE`.
+- The Go supervisor passes configuration to the Python sidecar via `DSCIDA_HOST`, `DSCIDA_PORT`, `DSCIDA_SESSION_DIR`, `DSCIDA_SESSION_ID`, `DSCIDA_SESSION_INSTANCE_ID`, `DSCIDA_CONTROL_TOKEN`, `DSCIDA_TARGET_KIND`, `DSCIDA_IMAGE_COUNT`, `DSCIDA_DSC_PATH`, `DSCIDA_DSC_UUID`, `DSCIDA_MAIN_MODULE`, `DSCIDA_SOURCE_PATH`, `DSCIDA_INPUT_PATH`, `DSCIDA_INPUT_SHA256`, `DSCIDA_INPUT_SIZE`, `DSCIDA_BINARY_FORMAT`, `DSCIDA_MACHO_UUID`.
 - `TVHEADLESS=1` is set on all `idat` invocations (IDA's headless mode).
-- For initial DSC loading, `IDA_DYLD_CACHE_MODULE` selects the primary module.
+- For DSC sessions, `IDA_DYLD_CACHE_MODULE` selects the primary module.
+- For binary sessions, IDA uses its native loader with the staged immutable input.

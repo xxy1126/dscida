@@ -35,6 +35,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return env.modules(args[1:])
 	case "start":
 		return env.start(args[1:])
+	case "start-binary":
+		return env.startBinary(args[1:])
 	case "add":
 		return env.add(args[1:])
 	case "status":
@@ -65,11 +67,12 @@ func Run(args []string, stdout, stderr io.Writer) error {
 }
 
 func (e *environment) usage() {
-	fmt.Fprintln(e.stderr, `dscida - headless selective DSC analysis for IDA Pro
+	fmt.Fprintln(e.stderr, `dscida - headless DSC and standalone binary analysis for IDA Pro
 
 Usage:
   dscida modules <DSC> [--query TEXT] [--json]
   dscida start <DSC> --module <ABSOLUTE_INSTALL_PATH> [flags]
+  dscida start-binary <INPUT> [flags]
   dscida add <SESSION> --module <ABSOLUTE_INSTALL_PATH> [--no-wait]
   dscida status <SESSION> [--json]
   dscida sessions [--json]

@@ -57,7 +57,10 @@ func (e *environment) status(args []string) error {
 	if *jsonOutput {
 		return writeJSON(e.stdout, result)
 	}
-	fmt.Fprintf(e.stdout, "session: %s\nstate: %s\nprocess alive: %t\ncontrol healthy: %t\nMCP healthy: %t\ngeneration: %d\n", session.SessionID, session.State, live, controlHealthy, mcpHealthy, session.CurrentGeneration)
+	fmt.Fprintf(e.stdout, "session: %s\ntarget: %s\nstate: %s\nprocess alive: %t\ncontrol healthy: %t\nMCP healthy: %t\ngeneration: %d\n", session.SessionID, store.TargetKind(session), session.State, live, controlHealthy, mcpHealthy, session.CurrentGeneration)
+	if store.TargetKind(session) == store.TargetBinary {
+		fmt.Fprintf(e.stdout, "input: %s\nformat: %s\narchitecture: %s\n", session.SourcePath, session.BinaryFormat, session.Architecture)
+	}
 	if session.MCPURL != "" {
 		fmt.Fprintf(e.stdout, "MCP: %s\n", session.MCPURL)
 	}
@@ -95,9 +98,13 @@ func (e *environment) sessions(args []string) error {
 		return writeJSON(e.stdout, map[string]any{"sessions": sessions})
 	}
 	table := tabwriter.NewWriter(e.stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(table, "SESSION\tSTATE\tPID\tGENERATION\tPRIMARY MODULE")
+	fmt.Fprintln(table, "SESSION\tTARGET\tSTATE\tPID\tGENERATION\tPRIMARY")
 	for _, session := range sessions {
-		fmt.Fprintf(table, "%s\t%s\t%d\t%d\t%s\n", session.SessionID, session.State, session.IDAPID, session.CurrentGeneration, session.MainModule)
+		primary := session.MainModule
+		if store.TargetKind(&session) == store.TargetBinary {
+			primary = session.SourcePath
+		}
+		fmt.Fprintf(table, "%s\t%s\t%s\t%d\t%d\t%s\n", session.SessionID, store.TargetKind(&session), session.State, session.IDAPID, session.CurrentGeneration, primary)
 	}
 	return table.Flush()
 }

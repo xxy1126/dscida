@@ -87,14 +87,13 @@ func (e *environment) completeJobWithLifecycle(ctx context.Context, st *store.St
 				unlock()
 				return nil, e.failAndRecover(ctx, st, run, session, job, lifecycleHeld, err)
 			}
-			observed, observationErr := validateObservedIndexes(job.LoadedImageIndexes, expected, session.ImageCount)
+			observed, observationErr := validateObservedIndexesForTarget(session, job.LoadedImageIndexes, expected)
 			if observationErr != nil {
 				unlock()
 				return nil, e.failAndRecover(ctx, st, run, session, job, lifecycleHeld, observationErr)
 			}
 			validation, err := run.Validate(
-				ctx, st.SessionDir(session.SessionID), job.SnapshotPath, observed,
-				session.ImageCount, session.DSCPath, session.DSCUUID, session.MainModule,
+				ctx, st.SessionDir(session.SessionID), job.SnapshotPath, observed, session,
 			)
 			if err != nil {
 				unlock()

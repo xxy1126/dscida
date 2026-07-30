@@ -32,6 +32,9 @@ func (e *environment) add(args []string) error {
 	if err != nil {
 		return err
 	}
+	if store.TargetKind(session) != store.TargetDSC {
+		return fmt.Errorf("operation_not_supported_for_target: add requires a DSC session")
+	}
 	cacheInfo, err := cache.Open(session.DSCPath)
 	if err != nil {
 		return err

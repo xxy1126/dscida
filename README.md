@@ -1,9 +1,10 @@
 # dscida
 
-`dscida` is a macOS CLI for opening selected images from an Apple
-`dyld_shared_cache` in headless IDA Pro. It keeps one `idat` process alive,
-allows additional DSC images to be loaded into the same database, and exposes
-the unmodified `ida-pro-mcp` endpoint for AI-assisted analysis.
+`dscida` is a macOS CLI for opening either selected images from an Apple
+`dyld_shared_cache`, or a standalone binary, in headless IDA Pro. It keeps one
+`idat` process alive per session and exposes the unmodified `ida-pro-mcp`
+endpoint for AI-assisted analysis. DSC sessions can add more cache images;
+standalone sessions currently support thin Mach-O and little-endian ELF.
 
 The DSC lifecycle does not run through MCP:
 
@@ -28,7 +29,8 @@ The executable has three layers:
 
 - macOS
 - IDA Professional 9.1 (the currently validated build)
-- IDAPython and the IDA DSCU plugin
+- IDAPython
+- the IDA DSCU plugin for DSC sessions
 - `ida-pro-mcp` installed for IDA
 - Claude Code is optional; it is required only for `dscida claude ...`
 - Go 1.26 or newer to build
@@ -83,6 +85,18 @@ Start one primary module:
 dscida start /path/to/dyld_shared_cache_arm64e \
   --module /System/Library/Frameworks/Security.framework/Security
 ```
+
+Or start a standalone thin Mach-O or ELF. IDA uses its normal native loader;
+this does not involve DSCU:
+
+```bash
+dscida start-binary /absolute/path/to/binary --session binary1
+```
+
+The input is copied from an already opened file descriptor into a
+SHA-256-named, read-only file inside the session before IDA starts. Unknown
+formats and all fat/universal Mach-O containers are rejected rather than
+waiting for an invisible loader dialog. `dscida add` is DSC-only.
 
 The result contains a session ID and an OS-assigned MCP URL. Add later modules
 to the same IDA PID and database:
@@ -171,12 +185,25 @@ dscida start /path/to/dyld_shared_cache_arm64e \
   --resume
 ```
 
+For a standalone session:
+
+```bash
+dscida start-binary /absolute/path/to/binary \
+  --session binary1 \
+  --resume
+```
+
+Resume verifies that the original source still has the recorded SHA-256, then
+opens only the committed IDB generation. It never reloads a changed source
+into the existing database.
+
 ## Persistence and recovery
 
 Each session contains:
 
 ```text
 generations/   verified, read-only packed IDBs
+inputs/        immutable SHA-256-named standalone inputs
 runtime/       the live writable IDB
 jobs/          durable operation records
 staging/       snapshots and validator attempts
@@ -187,8 +214,10 @@ session.json   orchestration state
 ```
 
 Every successful start, add, and save snapshots the live IDB, reopens a copy
-in a separate headless validator, independently verifies the DSC identity and
-loaded-image indexes, then atomically advances `current.json`. If a mutation
+in a separate headless validator, independently verifies its target identity,
+then atomically advances `current.json`. DSC validation checks the DSC identity
+and loaded-image indexes. Binary validation requires both the tool-owned
+identity and IDA's native input path/SHA-256/file-type/processor metadata. If a mutation
 fails after IDA may have changed, the MCP endpoint is taken down and the
 session enters `recovery_required`; `start --resume` restores only the last
 verified generation. A failed live mutation automatically attempts that
@@ -197,6 +226,8 @@ recovery itself cannot complete.
 
 Set `DSCIDA_HOME` to change the default state root. Tests and experiments can
 instead pass `--output-dir` to `start` and `--state-dir` to later commands.
+The canonical state root and its session directories must be owned by the
+current user; `dscida` enforces mode `0700` and rejects symlinked session roots.
 
 ## Source layout
 
@@ -213,6 +244,7 @@ internal/app/doctor.go         static diagnostics
 internal/app/probe.go          disposable real-DSC runtime probe
 internal/app/logging.go        structured supervisor logging
 internal/cache/                DSC metadata and canonical module resolution
+internal/binaryinput/          standalone format inspection and immutable input staging
 internal/control/              private control and MCP health clients
 internal/bridge/               Go MCP stdio server, endpoint following,
                                fail-closed identity checks, SSE listener

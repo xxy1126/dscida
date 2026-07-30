@@ -99,7 +99,8 @@ func TestRecoverySkipsSessionAfterStopConsumedJob(t *testing.T) {
 	}
 	session := &store.Session{
 		SessionID: "stop-wins", State: "ready", ControlToken: "secret",
-		CurrentGeneration: 1,
+		CurrentGeneration: 1, TargetKind: store.TargetDSC,
+		DSCPath: "/cache", DSCUUID: "UUID", MainModule: "/module",
 	}
 	if err := st.Initialize(session); err != nil {
 		t.Fatal(err)
@@ -145,7 +146,8 @@ func TestRecoveryUsesCallerDeadline(t *testing.T) {
 	}
 	session := &store.Session{
 		SessionID: "deadline", State: "ready", ControlToken: "secret",
-		CurrentGeneration: 1,
+		CurrentGeneration: 1, TargetKind: store.TargetDSC,
+		DSCPath: "/cache", DSCUUID: "UUID", MainModule: "/module",
 	}
 	if err := st.Initialize(session); err != nil {
 		t.Fatal(err)
