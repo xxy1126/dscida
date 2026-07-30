@@ -35,9 +35,15 @@ All Go tests are offline — they use temp directories and mock paths, never a r
 
 2. **Embedded IDAPython sidecar** (`internal/assets/dscida_sidecar.py`) — runs inside the persistent headless IDA process. Serves authenticated `/control/*` HTTP routes (`/control/ping`, `/control/load-module`, `/control/save`, `/control/snapshot`, `/control/shutdown`) on a loopback port. Publishes `ready.json` to the session runtime directory when IDA finishes auto-analysis. The sidecar is compiled into the Go binary via `//go:embed`.
 
-3. **Unmodified `ida-pro-mcp`** (`/mcp` endpoint) — the stock MCP server runs in the same IDA process on the same loopback endpoint. The Go supervisor never uses MCP for DSC lifecycle operations; it only calls `/control/*` routes for that. The MCP endpoint is health-checked on startup and exposed to AI clients.
+3. **Unmodified `ida-pro-mcp` plus stable bridge** (`/mcp` endpoint and
+   `internal/bridge`) — the stock MCP server runs in the same IDA process on
+   the same loopback endpoint. A per-session Go stdio bridge mirrors its tools
+   to Claude Code, pins `session_instance_id`, verifies authenticated live
+   identity before calls, and follows normal IDA endpoint replacement. The Go
+   supervisor never uses MCP for DSC lifecycle mutations.
 
-The lifecycle separation is: `AI client → /mcp` (analysis), `dscida CLI → /control` (DSC management).
+The lifecycle separation is: `AI client → stable bridge → /mcp` (analysis),
+`dscida CLI → /control` (DSC management).
 
 ## Key packages
 
@@ -53,6 +59,7 @@ The lifecycle separation is: `AI client → /mcp` (analysis), `dscida CLI → /c
 | `internal/cache/cache.go` | Reads DSC metadata via `ipsw/pkg/dyld`, canonical module resolution, filtering |
 | `internal/runner/runner.go` | Launches headless `idat` (both fresh and open-existing), runs separate validator processes, snapshot copying |
 | `internal/control/client.go` | HTTP client for `/control/*` routes and MCP health checks (initialize + tools/list + server_health) |
+| `internal/bridge/` | MCP stdio server, Streamable HTTP client, endpoint following, and fail-closed identity checks |
 | `internal/assets/assets.go` | Embeds `dscida_sidecar.py` and `dscida_validator.py` via `//go:embed` |
 
 ## Safety and persistence model
@@ -91,6 +98,6 @@ DSCIDA_HOME/sessions/<id>/
 ## Environment variables
 
 - `DSCIDA_HOME` — overrides the default state root (`~/Library/Application Support/dscida`).
-- The Go supervisor passes configuration to the Python sidecar via `DSCIDA_HOST`, `DSCIDA_PORT`, `DSCIDA_SESSION_DIR`, `DSCIDA_CONTROL_TOKEN`, `DSCIDA_IMAGE_COUNT`, `DSCIDA_DSC_PATH`, `DSCIDA_DSC_UUID`, `DSCIDA_MAIN_MODULE`.
+- The Go supervisor passes configuration to the Python sidecar via `DSCIDA_HOST`, `DSCIDA_PORT`, `DSCIDA_SESSION_DIR`, `DSCIDA_SESSION_ID`, `DSCIDA_SESSION_INSTANCE_ID`, `DSCIDA_CONTROL_TOKEN`, `DSCIDA_IMAGE_COUNT`, `DSCIDA_DSC_PATH`, `DSCIDA_DSC_UUID`, `DSCIDA_MAIN_MODULE`.
 - `TVHEADLESS=1` is set on all `idat` invocations (IDA's headless mode).
 - For initial DSC loading, `IDA_DYLD_CACHE_MODULE` selects the primary module.

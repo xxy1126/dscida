@@ -18,7 +18,10 @@ import (
 	"time"
 )
 
-const SchemaVersion = 1
+const (
+	SchemaVersion        = 1
+	SessionSchemaVersion = 2
+)
 
 var terminalJobs = map[string]bool{
 	"succeeded":               true,
@@ -58,6 +61,7 @@ var jobTransitions = map[string]map[string]bool{
 type Session struct {
 	SchemaVersion       int      `json:"schema_version"`
 	SessionID           string   `json:"session_id"`
+	SessionInstanceID   string   `json:"session_instance_id,omitempty"`
 	State               string   `json:"state"`
 	DSCPath             string   `json:"dsc_path"`
 	DSCUUID             string   `json:"dsc_uuid"`
@@ -121,14 +125,16 @@ type Current struct {
 }
 
 type Ready struct {
-	Success    bool   `json:"success"`
-	State      string `json:"state"`
-	PID        int    `json:"pid"`
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	MCPURL     string `json:"mcp_url"`
-	ControlURL string `json:"control_url"`
-	IDA        struct {
+	Success           bool   `json:"success"`
+	State             string `json:"state"`
+	SessionID         string `json:"session_id"`
+	SessionInstanceID string `json:"session_instance_id"`
+	PID               int    `json:"pid"`
+	Host              string `json:"host"`
+	Port              int    `json:"port"`
+	MCPURL            string `json:"mcp_url"`
+	ControlURL        string `json:"control_url"`
+	IDA               struct {
 		IDBPath            string `json:"idb_path"`
 		LoadedImageBackend string `json:"loaded_image_backend"`
 		LoadedImageIndexes []int  `json:"loaded_image_indices"`
@@ -178,7 +184,12 @@ func (s *Store) Initialize(session *Session) error {
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	session.SchemaVersion = SchemaVersion
+	session.SchemaVersion = SessionSchemaVersion
+	instanceID, err := RandomID("instance-", 16)
+	if err != nil {
+		return err
+	}
+	session.SessionInstanceID = instanceID
 	session.CreatedAt = now
 	session.UpdatedAt = now
 	if err := WriteJSON(filepath.Join(dir, "secret.json"), Secret{ControlToken: session.ControlToken}, 0o600); err != nil {
@@ -195,8 +206,12 @@ func (s *Store) LoadSession(id string) (*Session, error) {
 	if err := ReadJSON(filepath.Join(s.SessionDir(id), "session.json"), &session); err != nil {
 		return nil, err
 	}
-	if session.SchemaVersion != SchemaVersion || session.SessionID != id {
+	if (session.SchemaVersion != SchemaVersion && session.SchemaVersion != SessionSchemaVersion) ||
+		session.SessionID != id {
 		return nil, fmt.Errorf("session identity or schema mismatch for %s", id)
+	}
+	if session.SchemaVersion == SessionSchemaVersion && !ValidID(session.SessionInstanceID) {
+		return nil, fmt.Errorf("session %s has invalid instance identity", id)
 	}
 	if err := validateEndpoint(session.ControlURL, "/control"); err != nil {
 		return nil, fmt.Errorf("invalid persisted control URL: %w", err)
@@ -218,8 +233,21 @@ func (s *Store) LoadSession(id string) (*Session, error) {
 }
 
 func (s *Store) SaveSession(session *Session) error {
+	if session.SchemaVersion == SessionSchemaVersion && !ValidID(session.SessionInstanceID) {
+		return fmt.Errorf("session %s has invalid instance identity", session.SessionID)
+	}
+	var existing Session
+	sessionPath := filepath.Join(s.SessionDir(session.SessionID), "session.json")
+	if err := ReadJSON(sessionPath, &existing); err == nil {
+		if existing.SchemaVersion == SessionSchemaVersion &&
+			existing.SessionInstanceID != session.SessionInstanceID {
+			return fmt.Errorf("session %s instance identity is immutable", session.SessionID)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read session before save: %w", err)
+	}
 	session.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	return WriteJSON(filepath.Join(s.SessionDir(session.SessionID), "session.json"), session, 0o600)
+	return WriteJSON(sessionPath, session, 0o600)
 }
 
 func (s *Store) ListSessions() ([]Session, error) {
@@ -553,6 +581,14 @@ func (s *Store) PrepareResume(session *Session) (*Current, error) {
 	}
 	if ProcessAlive(fresh.IDAPID) {
 		return nil, fmt.Errorf("session %s already has a live IDA process", fresh.SessionID)
+	}
+	if fresh.SchemaVersion == SchemaVersion {
+		instanceID, err := RandomID("instance-", 16)
+		if err != nil {
+			return nil, fmt.Errorf("upgrade legacy session identity: %w", err)
+		}
+		fresh.SchemaVersion = SessionSchemaVersion
+		fresh.SessionInstanceID = instanceID
 	}
 	current, err := s.LoadCurrent(fresh)
 	if err != nil {
@@ -907,6 +943,23 @@ func validateEndpoint(rawURL, expectedPath string) error {
 	port, err := strconv.Atoi(parsed.Port())
 	if err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("endpoint has no valid TCP port")
+	}
+	return nil
+}
+
+func ValidateEndpointPair(controlURL, mcpURL string) error {
+	if err := validateEndpoint(controlURL, "/control"); err != nil {
+		return fmt.Errorf("invalid control endpoint: %w", err)
+	}
+	if err := validateEndpoint(mcpURL, "/mcp"); err != nil {
+		return fmt.Errorf("invalid MCP endpoint: %w", err)
+	}
+	controlEndpoint, _ := url.Parse(controlURL)
+	mcpEndpoint, _ := url.Parse(mcpURL)
+	if controlEndpoint.Scheme != mcpEndpoint.Scheme ||
+		controlEndpoint.Hostname() != mcpEndpoint.Hostname() ||
+		controlEndpoint.Port() != mcpEndpoint.Port() {
+		return fmt.Errorf("control and MCP endpoints do not share one listener")
 	}
 	return nil
 }

@@ -3,8 +3,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"text/tabwriter"
 	"time"
@@ -156,49 +154,6 @@ func (e *environment) job(args []string) error {
 	}
 	fmt.Fprintf(e.stdout, "job: %s\nsession: %s\noperation: %s\nstate: %s\nmodule: %s\nerror: %s\n", job.JobID, job.SessionID, job.Operation, job.State, job.ModulePath, job.Error)
 	return nil
-}
-
-func (e *environment) mcp(args []string) error {
-	set := flagSet("mcp", e.stderr)
-	root := set.String("state-dir", "", "state root")
-	stdio := set.Bool("stdio", false, "run ida-pro-mcp stdio proxy")
-	if err := parseInterspersed(set, args); err != nil {
-		return err
-	}
-	if err := requireArgs(set, 1, "dscida mcp <SESSION> [--stdio]"); err != nil {
-		return err
-	}
-	st, err := rootStore(*root)
-	if err != nil {
-		return err
-	}
-	session, err := st.LoadSession(set.Arg(0))
-	if err != nil {
-		return err
-	}
-	if session.MCPURL == "" {
-		return fmt.Errorf("session has no live MCP endpoint")
-	}
-	if !store.ProcessAlive(session.IDAPID) {
-		return fmt.Errorf("session IDA process is not alive")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := control.MCPHealth(ctx, session.MCPURL); err != nil {
-		cancel()
-		return fmt.Errorf("session MCP endpoint is unhealthy: %w", err)
-	}
-	cancel()
-	if !*stdio {
-		fmt.Fprintln(e.stdout, session.MCPURL)
-		return nil
-	}
-	python, err := exec.LookPath("python3.11")
-	if err != nil {
-		return fmt.Errorf("python3.11 required for ida-pro-mcp stdio proxy: %w", err)
-	}
-	command := exec.Command(python, "-m", "ida_pro_mcp.server", "--ida-rpc", session.MCPURL)
-	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return command.Run()
 }
 
 func (e *environment) logs(args []string) error {

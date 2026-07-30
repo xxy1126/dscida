@@ -32,6 +32,69 @@ func TestWriteJSONReplacesAtomically(t *testing.T) {
 	}
 }
 
+func TestInitializeCreatesSchemaV2SessionInstanceIdentity(t *testing.T) {
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{SessionID: "identity", State: "creating", ControlToken: "secret"}
+	if err := st.Initialize(session); err != nil {
+		t.Fatal(err)
+	}
+	if session.SchemaVersion != SessionSchemaVersion ||
+		!ValidID(session.SessionInstanceID) {
+		t.Fatalf(
+			"schema=%d instance=%q",
+			session.SchemaVersion, session.SessionInstanceID,
+		)
+	}
+	reloaded, err := st.LoadSession(session.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.SessionInstanceID != session.SessionInstanceID {
+		t.Fatalf(
+			"reloaded instance=%q, want %q",
+			reloaded.SessionInstanceID, session.SessionInstanceID,
+		)
+	}
+}
+
+func TestSaveSessionRejectsInstanceIdentityChange(t *testing.T) {
+	st, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{SessionID: "immutable", State: "creating", ControlToken: "secret"}
+	if err := st.Initialize(session); err != nil {
+		t.Fatal(err)
+	}
+	session.SessionInstanceID = "instance-replaced"
+	if err := st.SaveSession(session); err == nil {
+		t.Fatal("changed session instance identity unexpectedly saved")
+	}
+}
+
+func TestValidateEndpointPairRequiresSameLoopbackListener(t *testing.T) {
+	if err := ValidateEndpointPair(
+		"http://127.0.0.1:1234/control",
+		"http://127.0.0.1:1234/mcp",
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, mcpURL := range []string{
+		"http://127.0.0.1:4321/mcp",
+		"http://example.com:1234/mcp",
+		"http://127.0.0.1:1234/other",
+	} {
+		if err := ValidateEndpointPair(
+			"http://127.0.0.1:1234/control", mcpURL,
+		); err == nil {
+			t.Fatalf("invalid endpoint pair accepted: %s", mcpURL)
+		}
+	}
+}
+
 func TestClearHistoricalJobDoesNotChangeSessionState(t *testing.T) {
 	st, err := New(t.TempDir())
 	if err != nil {

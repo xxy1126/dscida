@@ -9,7 +9,7 @@ The DSC lifecycle does not run through MCP:
 
 ```text
 dscida CLI -> authenticated private /control routes -> IDA DSCU
-AI client  -> unmodified /mcp endpoint              -> IDA analysis
+AI client  -> stable dscida stdio bridge -> current unmodified /mcp endpoint
 ```
 
 The executable has three layers:
@@ -19,7 +19,10 @@ The executable has three layers:
 - the embedded IDAPython sidecar invokes DSCU inside the persistent headless
   IDA process and serves authenticated `/control/*` routes;
 - the installed, unmodified `ida-pro-mcp` serves `/mcp` for AI analysis on the
-  same loopback endpoint.
+  same loopback endpoint;
+- the Go MCP bridge gives Claude Code one stable, named stdio server per
+  logical dscida session and follows that session when IDA restarts on a new
+  PID or dynamic port.
 
 ## Requirements
 
@@ -27,6 +30,7 @@ The executable has three layers:
 - IDA Professional 9.1 (the currently validated build)
 - IDAPython and the IDA DSCU plugin
 - `ida-pro-mcp` installed for IDA
+- Claude Code is optional; it is required only for `dscida claude ...`
 - Go 1.26 or newer to build
 
 The `ipsw` CLI is not a runtime dependency. The public
@@ -99,7 +103,60 @@ Inspect or hand the MCP endpoint to an AI client:
 ```bash
 dscida status SESSION
 dscida mcp SESSION
+```
+
+Run a one-shot stdio proxy that connects to the current MCP URL and exits
+when stdin closes:
+
+```bash
 dscida mcp SESSION --stdio
+```
+
+Run a stable stdio MCP server that follows endpoint changes (PID, port)
+and survives IDA restarts without reconfiguration:
+
+```bash
+dscida mcp SESSION --stdio --follow --server-name my_session
+```
+
+For Claude Code, install a stable per-session MCP entry:
+
+```bash
+dscida claude install SESSION --name dscida_security --scope local
+dscida claude list --json
+```
+
+Claude Code then sees tools such as
+`mcp__dscida_security__server_health` and
+`mcp__dscida_security__decompile`. The configuration contains the logical
+session name and absolute executable/state paths, not an IDA PID, dynamic
+port, control token, or downstream MCP session ID.
+
+Multiple IDA instances use separate names and bridges:
+
+```bash
+dscida claude install ida1 --name dscida_security --scope local
+dscida claude install ida2 --name dscida_objc --scope local
+```
+
+Each bridge pins the session's immutable `session_instance_id`, verifies the
+authenticated control identity before publishing tools and before every tool
+call, and fails closed rather than routing to another healthy IDA. Normal
+stop/resume preserves that identity, so the same Claude task follows a new PID
+and port. During the short recovery window its tool list is temporarily empty;
+after the list-change notification Claude can use the restored tools without
+rewriting configuration.
+
+Inspect the generated command without changing Claude configuration:
+
+```bash
+dscida claude install SESSION --dry-run
+```
+
+Removing an entry always requires an explicit scope and does not stop IDA:
+
+```bash
+dscida claude remove dscida_security --scope local
 ```
 
 Save, stop, and later resume from the verified immutable generation:
@@ -146,7 +203,9 @@ instead pass `--output-dir` to `start` and `--state-dir` to later commands.
 ```text
 cmd/dscida/main.go             executable entry point
 internal/app/app.go            command dispatch and shared CLI helpers
-internal/app/command_*.go      individual CLI command groups
+internal/app/command_mcp.go    mcp --stdio, --follow, and --server-name
+internal/app/command_claude.go claude install, remove, and list
+internal/app/command_*.go      other CLI command groups
 internal/app/jobs.go           durable job completion and generation commit
 internal/app/recovery.go       resume, rollback, restart, and termination
 internal/app/validation.go     loaded-index and module consistency rules
@@ -155,6 +214,8 @@ internal/app/probe.go          disposable real-DSC runtime probe
 internal/app/logging.go        structured supervisor logging
 internal/cache/                DSC metadata and canonical module resolution
 internal/control/              private control and MCP health clients
+internal/bridge/               Go MCP stdio server, endpoint following,
+                               fail-closed identity checks, SSE listener
 internal/runner/               IDA launch and snapshot validator processes
 internal/store/                durable session/job/generation state
 internal/assets/               embedded IDAPython sidecar and validator

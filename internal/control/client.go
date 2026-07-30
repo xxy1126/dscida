@@ -23,7 +23,7 @@ func New(baseURL, token string) *Client {
 	return &Client{
 		BaseURL: baseURL,
 		Token:   token,
-		HTTP:    &http.Client{Timeout: 10 * time.Second},
+		HTTP:    safeHTTPClient(10 * time.Second),
 	}
 }
 
@@ -162,7 +162,7 @@ func initializeMCP(ctx context.Context, endpoint string) (string, *http.Client, 
 		return "", nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := safeHTTPClient(10 * time.Second)
 	response, err := client.Do(request)
 	if err != nil {
 		return "", nil, fmt.Errorf("MCP initialize: %w", err)
@@ -187,4 +187,15 @@ func initializeMCP(ctx context.Context, endpoint string) (string, *http.Client, 
 		return "", nil, fmt.Errorf("invalid MCP initialize response: %s", payload)
 	}
 	return sessionID, client, nil
+}
+
+func safeHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(
+			request *http.Request, via []*http.Request,
+		) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }

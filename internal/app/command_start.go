@@ -127,6 +127,7 @@ func (e *environment) start(args []string) error {
 	pid, err := run.Launch(runner.LaunchOptions{
 		SessionDir: sessionDir, DSCPath: cacheInfo.Path, ModulePath: module.ModulePath,
 		Arch: cacheInfo.Architecture, DSCUUID: cacheInfo.UUID, ImageCount: cacheInfo.ImageCount, WorkingIDB: workingIDB,
+		SessionID: session.SessionID, SessionInstanceID: session.SessionInstanceID,
 		Token: token, Host: *host, Port: *port,
 	})
 	if err != nil {
@@ -146,13 +147,14 @@ func (e *environment) start(args []string) error {
 	if err != nil {
 		return failSession(st, session, fmt.Errorf("wait for IDA readiness: %w (see %s)", err, filepath.Join(sessionDir, "logs")))
 	}
-	session.ControlURL = ready.ControlURL
-	session.MCPURL = ready.MCPURL
-	if err := st.SaveSession(session); err != nil {
-		return failSession(st, session, err)
+	if ready.SessionID != session.SessionID || ready.SessionInstanceID != session.SessionInstanceID {
+		return failSession(st, session, fmt.Errorf("IDA ready identity does not match session incarnation"))
 	}
 	if !store.SamePath(ready.IDA.IDBPath, workingIDB) {
 		return failSession(st, session, fmt.Errorf("IDA opened unexpected IDB %q", ready.IDA.IDBPath))
+	}
+	if err := store.ValidateEndpointPair(ready.ControlURL, ready.MCPURL); err != nil {
+		return failSession(st, session, fmt.Errorf("IDA ready endpoints: %w", err))
 	}
 	if err := validateLoadedIndexes(ready.IDA.LoadedImageIndexes, cacheInfo.ImageCount, index); err != nil {
 		return failSession(st, session, err)
@@ -160,6 +162,8 @@ func (e *environment) start(args []string) error {
 	if err := control.MCPHealth(ctx, ready.MCPURL); err != nil {
 		return failSession(st, session, fmt.Errorf("MCP readiness: %w", err))
 	}
+	session.ControlURL = ready.ControlURL
+	session.MCPURL = ready.MCPURL
 	session.LoadedImageIndexes = append([]int(nil), ready.IDA.LoadedImageIndexes...)
 	reconcileModules(session, cacheInfo)
 	session.State = "checkpointing_initial"
@@ -185,7 +189,8 @@ func (e *environment) start(args []string) error {
 		return err
 	}
 	result := map[string]any{
-		"success": true, "session_id": session.SessionID, "state": session.State,
+		"success": true, "session_id": session.SessionID,
+		"session_instance_id": session.SessionInstanceID, "state": session.State,
 		"ida_pid": session.IDAPID, "module_path": module.ModulePath, "image_index": index,
 		"generation": session.CurrentGeneration, "mcp_url": session.MCPURL,
 		"control_url": session.ControlURL, "session_dir": sessionDir, "job_id": job.JobID,
@@ -213,7 +218,8 @@ func (e *environment) resumeSession(st *store.Store, session *store.Session, run
 	}
 	result := map[string]any{
 		"success": true, "resumed": true, "session_id": session.SessionID,
-		"state": session.State, "ida_pid": session.IDAPID, "generation": current.Generation,
+		"session_instance_id": session.SessionInstanceID,
+		"state":               session.State, "ida_pid": session.IDAPID, "generation": current.Generation,
 		"mcp_url": session.MCPURL, "control_url": session.ControlURL,
 	}
 	if err := printResult(e.stdout, jsonOutput, result); err != nil {

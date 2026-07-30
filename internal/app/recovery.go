@@ -149,7 +149,8 @@ func (e *environment) resumeCore(st *store.Store, session *store.Session, run *r
 	pid, err := run.Launch(runner.LaunchOptions{
 		SessionDir: sessionDir, DSCPath: session.DSCPath, DSCUUID: session.DSCUUID,
 		ModulePath: session.MainModule, Arch: session.Architecture, ImageCount: session.ImageCount,
-		WorkingIDB: session.WorkingIDBPath, Token: session.ControlToken, Host: host,
+		WorkingIDB: session.WorkingIDBPath, SessionID: session.SessionID,
+		SessionInstanceID: session.SessionInstanceID, Token: session.ControlToken, Host: host,
 		Port: port, OpenExisting: true,
 	})
 	if err != nil {
@@ -168,13 +169,14 @@ func (e *environment) resumeCore(st *store.Store, session *store.Session, run *r
 	if err != nil {
 		return nil, failSession(st, session, fmt.Errorf("wait for resumed IDA: %w", err))
 	}
-	session.ControlURL = ready.ControlURL
-	session.MCPURL = ready.MCPURL
-	if err := st.SaveSession(session); err != nil {
-		return nil, failSession(st, session, err)
+	if ready.SessionID != session.SessionID || ready.SessionInstanceID != session.SessionInstanceID {
+		return nil, failSession(st, session, fmt.Errorf("resumed IDA identity does not match session incarnation"))
 	}
 	if !store.SamePath(ready.IDA.IDBPath, session.WorkingIDBPath) {
 		return nil, failSession(st, session, fmt.Errorf("resumed IDA opened unexpected IDB %q", ready.IDA.IDBPath))
+	}
+	if err := store.ValidateEndpointPair(ready.ControlURL, ready.MCPURL); err != nil {
+		return nil, failSession(st, session, fmt.Errorf("resumed IDA ready endpoints: %w", err))
 	}
 	if !sameIndexes(ready.IDA.LoadedImageIndexes, current.LoadedImageIndexes) {
 		return nil, failSession(st, session, fmt.Errorf(
@@ -190,6 +192,8 @@ func (e *environment) resumeCore(st *store.Store, session *store.Session, run *r
 	if err := control.MCPHealth(ctx, ready.MCPURL); err != nil {
 		return nil, failSession(st, session, fmt.Errorf("resumed MCP readiness: %w", err))
 	}
+	session.ControlURL = ready.ControlURL
+	session.MCPURL = ready.MCPURL
 	session.State = "ready"
 	session.LoadedImageIndexes = append([]int(nil), current.LoadedImageIndexes...)
 	session.UncommittedMCPEdits = false

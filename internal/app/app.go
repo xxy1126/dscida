@@ -53,6 +53,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return env.stop(args[1:])
 	case "mcp":
 		return env.mcp(args[1:])
+	case "claude":
+		return env.claude(args[1:])
 	case "logs":
 		return env.logs(args[1:])
 	case "doctor":
@@ -76,7 +78,10 @@ Usage:
   dscida wait <JOB_ID> [--timeout DURATION]
   dscida save <SESSION>
   dscida stop <SESSION> [--no-save]
-  dscida mcp <SESSION> [--stdio]
+  dscida mcp <SESSION> [--stdio] [--follow] [--server-name NAME]
+  dscida claude install <SESSION> [--name NAME] [--scope local]
+  dscida claude remove <SERVER_NAME> --scope <local|project|user>
+  dscida claude list [--project-dir PATH] [--json]
   dscida logs <SESSION> [--component COMPONENT]
   dscida doctor [--probe]
   dscida doctor --probe-dsc --dsc <DSC> --module <PATH> [--add-module <PATH>]

@@ -98,17 +98,19 @@ func writeAsset(path string, data []byte) error {
 }
 
 type LaunchOptions struct {
-	SessionDir   string
-	DSCPath      string
-	DSCUUID      string
-	ModulePath   string
-	Arch         string
-	ImageCount   int
-	WorkingIDB   string
-	Token        string
-	Host         string
-	Port         int
-	OpenExisting bool
+	SessionDir        string
+	SessionID         string
+	SessionInstanceID string
+	DSCPath           string
+	DSCUUID           string
+	ModulePath        string
+	Arch              string
+	ImageCount        int
+	WorkingIDB        string
+	Token             string
+	Host              string
+	Port              int
+	OpenExisting      bool
 }
 
 func (r *Runner) Launch(options LaunchOptions) (int, error) {
@@ -144,6 +146,8 @@ func (r *Runner) Launch(options LaunchOptions) (int, error) {
 		"DSCIDA_HOST="+options.Host,
 		"DSCIDA_PORT="+strconv.Itoa(options.Port),
 		"DSCIDA_SESSION_DIR="+options.SessionDir,
+		"DSCIDA_SESSION_ID="+options.SessionID,
+		"DSCIDA_SESSION_INSTANCE_ID="+options.SessionInstanceID,
 		"DSCIDA_CONTROL_TOKEN="+options.Token,
 		"DSCIDA_IMAGE_COUNT="+strconv.Itoa(options.ImageCount),
 		"DSCIDA_DSC_PATH="+options.DSCPath,

@@ -25,6 +25,8 @@ from ida_mcp import IdaMcpHttpRequestHandler, MCP_SERVER
 HOST = os.environ.get("DSCIDA_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DSCIDA_PORT", "0"))
 SESSION_DIR = os.path.realpath(os.environ["DSCIDA_SESSION_DIR"])
+SESSION_ID = os.environ["DSCIDA_SESSION_ID"]
+SESSION_INSTANCE_ID = os.environ["DSCIDA_SESSION_INSTANCE_ID"]
 READY_PATH = os.path.join(SESSION_DIR, "runtime", "ready.json")
 TOKEN = os.environ["DSCIDA_CONTROL_TOKEN"]
 DSC_PATH = os.path.realpath(os.environ["DSCIDA_DSC_PATH"])
@@ -148,7 +150,13 @@ def loaded_image_indices():
 def ensure_database_identity():
     node = ida_netnode.netnode()
     node.create("$ dscida")
-    expected = (DSC_PATH, DSC_UUID, MAIN_MODULE)
+    expected = (
+        DSC_PATH,
+        DSC_UUID,
+        MAIN_MODULE,
+        SESSION_ID,
+        SESSION_INSTANCE_ID,
+    )
     for index, value in enumerate(expected):
         existing = node.supstr(index)
         if existing and existing != value:
@@ -253,7 +261,18 @@ class UnifiedHandler(IdaMcpHttpRequestHandler):
             self._send_json(200, {"success": True, "pid": os.getpid()})
         elif path in ("/control/status", "/control/loaded-modules"):
             self._send_json(
-                200, {"success": True, "pid": os.getpid(), "ida": snapshot()}
+                200,
+                {
+                    "success": True,
+                    "schema_version": 2,
+                    "session_id": SESSION_ID,
+                    "session_instance_id": SESSION_INSTANCE_ID,
+                    "pid": os.getpid(),
+                    "dsc_path": DSC_PATH,
+                    "dsc_uuid": DSC_UUID,
+                    "main_module": MAIN_MODULE,
+                    "ida": snapshot(),
+                },
             )
         elif path == "/control/analysis-status":
             self._send_json(
@@ -383,6 +402,8 @@ def publish_endpoint():
     ready = {
         "success": True,
         "state": "ready",
+        "session_id": SESSION_ID,
+        "session_instance_id": SESSION_INSTANCE_ID,
         "pid": os.getpid(),
         "host": actual_host,
         "port": actual_port,

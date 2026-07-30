@@ -30,6 +30,29 @@ func TestClientAuthorization(t *testing.T) {
 	}
 }
 
+func TestClientDoesNotForwardAuthorizationAcrossRedirect(t *testing.T) {
+	targetCalled := false
+	target := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter, request *http.Request,
+	) {
+		targetCalled = true
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter, request *http.Request,
+	) {
+		http.Redirect(writer, request, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+	var result map[string]any
+	err := New(source.URL+"/control", "secret").Get(
+		context.Background(), "/control/status", &result,
+	)
+	if err == nil || targetCalled {
+		t.Fatalf("redirect error=%v target_called=%t", err, targetCalled)
+	}
+}
+
 func TestMCPHealth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var envelope struct {
