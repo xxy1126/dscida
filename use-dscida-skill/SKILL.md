@@ -1,6 +1,6 @@
 ---
 name: use-dscida
-description: Operate the local dscida CLI for headless IDA analysis of dyld shared cache modules. Use when Claude Code must list canonical DSC module paths, load or replace a module in the fixed ida1/ida2 sessions, add modules to the same IDA database, inspect status or logs, stop IDA without saving, or analyze through the registered dscida_ida1/dscida_ida2 MCP servers.
+description: Operate the local dscida CLI for headless IDA analysis of dyld shared cache modules and standalone binaries. Use when an agent must list canonical DSC module paths, load or replace a module in the fixed ida1/ida2 sessions, add DSC modules to the same IDA database, run built-in analysis commands (decompile, disasm, xrefs, find, survey, ...), execute arbitrary IDAPython via exec, inspect status or logs, or stop IDA without saving.
 ---
 
 # Use dscida
@@ -11,15 +11,17 @@ Use the local executable:
 DSCIDA_BIN=/Volumes/tmo/ios_firmware/apple_tools/dscida/bin/dscida
 ```
 
-The two stable slots are already registered globally:
+The two stable session slots are:
 
-| dscida session | Claude MCP server |
+| dscida session | target |
 |---|---|
-| `ida1` | `dscida_ida1` |
-| `ida2` | `dscida_ida2` |
+| `ida1` | one logical IDA slot |
+| `ida2` | one logical IDA slot |
 
-Do not reinstall these MCP entries during normal use. A session name is a
-logical IDA slot; the MCP server name is what Claude Code sees.
+A session name is a logical IDA slot; it is not a PID or port. Analysis never
+goes through MCP: use `dscida exec` and the built-in analysis commands, which
+run IDAPython inside the live IDA process via the authenticated control
+endpoint.
 
 ## Select a DSC module
 
@@ -59,7 +61,7 @@ The normal workflow intentionally discards unsaved IDA changes:
 
 1. If the selected session exists and is running, stop it with `--no-save`.
 2. Start the new DSC/module under the same session name with `--replace`.
-3. Verify that the session, control endpoint, and MCP endpoint are healthy.
+3. Verify that the session and control endpoint are healthy.
 
 ```bash
 "$DSCIDA_BIN" stop "$SESSION_ID" --no-save
@@ -82,32 +84,47 @@ new `session_instance_id`.
 Do not use `--resume` when switching to another DSC or primary module.
 `--resume` is only for continuing the exact same DSC/module identity.
 
-## Reconnect Claude after replacement
+## Analyze the live session
 
-The registered name remains unchanged, but a replacement creates a new
-`session_instance_id`. An MCP bridge already running in the current Claude
-Code process deliberately refuses to jump to that new target.
-
-After replacement, tell the user to run `/mcp` in the current Claude Code
-session and reconnect:
-
-- reconnect `dscida_ida1` after replacing `ida1`;
-- reconnect `dscida_ida2` after replacing `ida2`.
-
-A newly started Claude Code session connects directly. Do not run
-`dscida claude install` again. Once connected, use the corresponding
-`mcp__dscida_ida1__*` or `mcp__dscida_ida2__*` tools for analysis. Do not
-substitute direct `curl` calls for MCP analysis tools.
-
-If tools are unavailable, first run:
+No reconnect step is needed after a replacement: the CLI resolves the current
+control endpoint from session state on every invocation. Analyze with the
+built-in commands (spec: `AGENT-CLI-SPEC.md`):
 
 ```bash
-"$DSCIDA_BIN" status "$SESSION_ID" --json
-"$DSCIDA_BIN" claude list --json
+"$DSCIDA_BIN" survey "$SESSION_ID" --json
+"$DSCIDA_BIN" funcs "$SESSION_ID" --query Security --limit 20
+"$DSCIDA_BIN" decompile "$SESSION_ID" _main
+"$DSCIDA_BIN" disasm "$SESSION_ID" _main --count 20
+"$DSCIDA_BIN" xrefs "$SESSION_ID" 0x180123000
+"$DSCIDA_BIN" imports "$SESSION_ID" --query libobjc
+"$DSCIDA_BIN" string "$SESSION_ID" 0x180123000
+"$DSCIDA_BIN" bytes "$SESSION_ID" 0x180123000 --length 32
+"$DSCIDA_BIN" find "$SESSION_ID" --hex "cf fa ed fe" --count 5
+"$DSCIDA_BIN" find "$SESSION_ID" --text "Usage" --case-insensitive
 ```
 
-If IDA is healthy and the MCP entry is registered, request an `/mcp`
-reconnect. Do not reinstall the entry as a first response.
+Addresses accept `0x` hex, decimal, or symbol names. Every command supports
+`--json`. Modifying commands persist only after an explicit save:
+
+```bash
+"$DSCIDA_BIN" rename "$SESSION_ID" _main my_func
+"$DSCIDA_BIN" comment "$SESSION_ID" _main "handled" --append
+"$DSCIDA_BIN" set-type "$SESSION_ID" _main "int my_func(int a);"
+"$DSCIDA_BIN" patch "$SESSION_ID" 0x180123000 9090
+"$DSCIDA_BIN" save "$SESSION_ID"
+```
+
+Run arbitrary IDAPython when a built-in does not cover the need:
+
+```bash
+"$DSCIDA_BIN" exec "$SESSION_ID" --code 'print(hex(idaapi.get_imagebase()))'
+"$DSCIDA_BIN" exec "$SESSION_ID" --script /path/script.py --arg name=alice --timeout 2m
+```
+
+`print` output is captured as `stdout`; assigning a JSON-serializable value to
+the `dscida_result` global returns it as `result`; a script raising an
+exception returns an error with traceback; exceeding `--timeout` returns
+`timed_out: true` without killing IDA.
 
 ## Add another module to the same DSC session
 
@@ -130,8 +147,7 @@ Always honor the user's no-save preference:
 ```
 
 This exits the headless IDA process and discards changes since the current
-committed generation. It does not remove the session directory or the
-user-scoped Claude MCP registration.
+committed generation. It does not remove the session directory.
 
 Do not kill the IDA PID directly unless `stop` has failed and the user asks
 for recovery. Direct termination can leave stale session state.
@@ -145,6 +161,6 @@ Use structured status first, then component logs:
 "$DSCIDA_BIN" logs "$SESSION_ID"
 ```
 
-Report the selected session, DSC path, canonical module path, IDA PID, health
-state, and corresponding Claude MCP server. Preserve logs and failed session
-artifacts unless the user explicitly requests cleanup.
+Report the selected session, DSC path, canonical module path, IDA PID, and
+health state. Preserve logs and failed session artifacts unless the user
+explicitly requests cleanup.

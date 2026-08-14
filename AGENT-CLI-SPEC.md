@@ -35,8 +35,11 @@ Goals:
 
 Non-goals for this iteration:
 
-- No new MCP surface, no bridge changes. The existing `/mcp` endpoint and bridge stay
-  untouched for the Claude Code MCP path.
+- No new MCP surface, no bridge changes. The Go MCP bridge and the
+  `dscida mcp`/`dscida claude` commands were removed from the CLI; agents use
+  this CLI surface exclusively. The sidecar still reuses the installed
+  `ida-pro-mcp` server as its headless HTTP transport, but the MCP tool surface
+  is unused by the CLI.
 - No debugger tooling, no assembly-level patching (`patch_asm`), no signature
   generation, no type inference batch jobs in the built-in set (available via
   `exec`).
@@ -267,8 +270,9 @@ Per-host placement (an installation note in the document, not code):
 | Claude Code | `~/.claude/skills/dscida/` |
 | Codex | `~/.codex/skills/dscida/` (verify exact path; see OQ-6) |
 
-The document explicitly states that MCP bridge reconnects are **not** needed: agents
-use `dscida` via their shell tool, and the CLI resolves the current endpoint itself.
+The document explicitly states that no MCP bridge or reconnect is involved:
+agents use `dscida` via their shell tool, and the CLI resolves the current
+endpoint from session state on every invocation.
 
 ## 8. Milestones and branch
 
