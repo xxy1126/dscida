@@ -59,6 +59,11 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return env.claude(args[1:])
 	case "logs":
 		return env.logs(args[1:])
+	case "exec":
+		return env.exec(args[1:])
+	case "decompile", "disasm", "funcs", "xrefs", "imports", "string",
+		"bytes", "find", "survey", "rename", "comment", "set-type", "patch":
+		return env.analysisHandler(args[0])(args[1:])
 	case "doctor":
 		return env.doctor(args[1:])
 	default:
@@ -86,6 +91,20 @@ Usage:
   dscida claude remove <SERVER_NAME> --scope <local|project|user>
   dscida claude list [--project-dir PATH] [--json]
   dscida logs <SESSION> [--component COMPONENT]
+  dscida exec <SESSION> (--code CODE | --script FILE) [--arg K=V] [--timeout DURATION]
+  dscida survey <SESSION>
+  dscida decompile <SESSION> <ADDR> [--cfg]
+  dscida disasm <SESSION> <ADDR> [--count N] [--graph]
+  dscida funcs <SESSION> [--query TEXT] [--limit N]
+  dscida xrefs <SESSION> <ADDR>
+  dscida imports <SESSION> [--query TEXT]
+  dscida string <SESSION> <ADDR> [--length N]
+  dscida bytes <SESSION> <ADDR> [--length N] [--hex | --text]
+  dscida find <SESSION> (--hex HEX | --text TEXT) [--from ADDR] [--to ADDR] [--count N]
+  dscida rename <SESSION> <ADDR> <NAME>
+  dscida comment <SESSION> <ADDR> <TEXT> [--append]
+  dscida set-type <SESSION> <ADDR> <TYPE>
+  dscida patch <SESSION> <ADDR> <HEX>
   dscida doctor [--probe]
   dscida doctor --probe-dsc --dsc <DSC> --module <PATH> [--add-module <PATH>]
 

@@ -197,6 +197,44 @@ Resume verifies that the original source still has the recorded SHA-256, then
 opens only the committed IDB generation. It never reloads a changed source
 into the existing database.
 
+## Agent analysis commands (exec and built-ins)
+
+The CLI also exposes an agent-friendly analysis surface that does not require MCP
+(spec: `AGENT-CLI-SPEC.md`). Every analysis command runs IDAPython inside the
+live session's IDA process; the IDAPython for the built-ins is shipped inside the
+`dscida` binary, so agents never write Python for common operations. All commands
+support `--json`; addresses accept `0x` hex, decimal, or symbol names.
+
+```bash
+# arbitrary IDAPython in the live IDA (print -> stdout, dscida_result -> JSON)
+dscida exec SESSION --code 'print(hex(idaapi.get_imagebase()))'
+dscida exec SESSION --script /path/script.py --arg name=alice --timeout 2m
+
+# read-only analysis
+dscida survey SESSION
+dscida funcs SESSION --query Security --limit 20
+dscida decompile SESSION _main
+dscida disasm SESSION _main --count 20
+dscida xrefs SESSION 0x180123000
+dscida imports SESSION --query Security
+dscida string SESSION 0x180123000
+dscida bytes SESSION 0x180123000 --length 32
+dscida find SESSION --hex "cf fa ed fe" --count 5
+dscida find SESSION --text "Usage" --case-insensitive
+
+# modifying commands touch the live IDB; run `dscida save SESSION` to persist
+dscida rename SESSION _main my_func
+dscida comment SESSION _main "handled" --append
+dscida set-type SESSION _main "int my_func(int a);"
+dscida patch SESSION 0x180123000 9090
+```
+
+Scripts run synchronously on IDA's main thread with a best-effort timeout; on
+expiry the script is interrupted when it returns to Python bytecode
+(`timed_out: true`), and the IDA process is never killed. Modifying commands set
+the session's `uncommitted_mcp_edits_possible` flag; nothing is persisted until
+an explicit `save`.
+
 ## Persistence and recovery
 
 Each session contains:

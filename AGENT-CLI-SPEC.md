@@ -37,8 +37,9 @@ Non-goals for this iteration:
 
 - No new MCP surface, no bridge changes. The existing `/mcp` endpoint and bridge stay
   untouched for the Claude Code MCP path.
-- No debugger tooling, no patching, no signature generation, no type inference batch
-  jobs in the built-in set (available via `exec`).
+- No debugger tooling, no assembly-level patching (`patch_asm`), no signature
+  generation, no type inference batch jobs in the built-in set (available via
+  `exec`).
 - No changes to the v1 job/generation/validation state machine. `exec` and the
   built-in commands run on the live IDB; durability still requires `save`.
 
@@ -82,7 +83,7 @@ Multi-session workflow contract for agents:
 ## 3. Built-in analysis commands
 
 All built-in commands accept `<SESSION>` first and a canonical `<ADDR>` argument
-(resolution rules in Section 6). Every command supports `--json`.
+(resolution rules in Section 5). Every command supports `--json`.
 
 ### 3.1 Read-only analysis
 
@@ -147,6 +148,7 @@ Body (max 64 KiB):
 The script executes **synchronously on IDA's main thread**, the same validated
 execution model used by `/control/load-module` (SPEC v1 §10). All MCP and control
 requests are serialized behind it while it runs; the process is busy, not dead.
+The body carries an optional `timeout_ms` (per-command defaults in Section 4.5).
 
 ### 4.2 Result contract
 
@@ -190,9 +192,9 @@ rule as v1 mutations). The IDA process is **never killed** by a timeout. The
 job-based async variant (OQ-4) is the planned fix for genuinely long scripts.
 
 `dscida exec --timeout DURATION` overrides the default; built-in commands use the
-per-command defaults in Section 4.4.
+per-command defaults in Section 4.5.
 
-### 4.3 Security posture
+### 4.4 Security posture
 
 v1 SPEC §11 explicitly forbids arbitrary Python evaluation ("No arbitrary Python
 evaluation or script execution"). This specification **revises that clause** for the
@@ -210,7 +212,7 @@ new route, with the following bounds:
   scripts; mutating scripts are the caller's responsibility and should be paired with
   a `save` when durability is wanted.
 
-### 4.4 Embedded script assets
+### 4.5 Embedded script assets
 
 Each built-in command is a small IDAPython template embedded into the Go binary via
 `//go:embed` under `internal/assets/scripts/` (e.g. `decompile.py`, `find_bytes.py`).

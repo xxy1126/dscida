@@ -1,8 +1,11 @@
 """Headless DSC lifecycle control hosted beside the unmodified IDA MCP server."""
 
+import contextlib
+import io
 import json
 import os
 import re
+import signal
 import threading
 import time
 import traceback
@@ -289,12 +292,100 @@ def save_snapshot(job_id):
     return path
 
 
+def _exec_timeout_handler(signum, frame):
+    raise TimeoutError("exec timeout")
+
+
+def execute_python(script, args, timeout_ms):
+    """Run a script synchronously on IDA's main thread with a best-effort alarm.
+
+    The script sees the common IDA modules as globals, a ``dscida_args`` dict,
+    and may assign a JSON-serializable ``dscida_result`` global. print() output
+    is captured. On timeout the alarm handler raises TimeoutError which unwinds
+    the script when it returns to the bytecode loop; the IDA process is never
+    killed.
+    """
+    started = time.monotonic()
+    buffer = io.StringIO()
+    environment = {
+        "__name__": "__dscida_exec__",
+        "dscida_result": None,
+        "dscida_args": args or {},
+    }
+    import ida_auto
+    import ida_bytes
+    import ida_entry
+    import ida_funcs
+    import ida_hexrays
+    import ida_idp
+    import ida_nalt
+    import ida_name
+    import ida_netnode
+    import ida_search
+    import ida_segment
+    import ida_typeinf
+    import ida_ua
+    import ida_xref
+    import idaapi
+    import idc
+
+    for module in (
+        ida_auto, ida_bytes, ida_entry, ida_funcs, ida_hexrays,
+        ida_idp, ida_nalt, ida_name, ida_netnode, ida_search,
+        ida_segment, ida_typeinf, ida_ua, ida_xref, idaapi, idc,
+    ):
+        environment[module.__name__] = module
+    timed_out = False
+    error = ""
+    traceback_text = ""
+    result = None
+    previous = None
+    if timeout_ms and timeout_ms > 0 and threading.current_thread() is threading.main_thread():
+        previous = signal.signal(signal.SIGALRM, _exec_timeout_handler)
+        signal.setitimer(signal.ITIMER_REAL, max(0.05, timeout_ms / 1000.0))
+    try:
+        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+            exec(compile(script, "<dscida-exec>", "exec"), environment)
+        result = environment.get("dscida_result")
+    except TimeoutError:
+        timed_out = True
+        error = "exec timeout"
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        traceback_text = traceback.format_exc()
+    finally:
+        if previous is not None:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+    payload = {
+        "session_id": SESSION_ID,
+        "session_instance_id": SESSION_INSTANCE_ID,
+        "pid": os.getpid(),
+        "stdout": buffer.getvalue(),
+        "execution_ms": round((time.monotonic() - started) * 1000, 3),
+        "timed_out": timed_out,
+        "error": error,
+        "traceback": traceback_text,
+    }
+    if not timed_out and not error:
+        if result is not None:
+            try:
+                json.dumps(result)
+                payload["result"] = result
+            except (TypeError, ValueError):
+                payload["error"] = "dscida_result is not JSON-serializable"
+    return payload
+
+
 class UnifiedHandler(IdaMcpHttpRequestHandler):
     def _authorized(self):
         return self.headers.get("Authorization") == f"Bearer {TOKEN}"
 
     def _send_json(self, status, payload):
-        body = json.dumps(payload, sort_keys=True).encode("utf-8")
+        try:
+            body = json.dumps(payload, sort_keys=True).encode("utf-8")
+        except TypeError:
+            body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -454,6 +545,41 @@ class UnifiedHandler(IdaMcpHttpRequestHandler):
                         "failed",
                         error=f"{type(exc).__name__}: {exc}",
                         traceback=traceback.format_exc(),
+                    )
+                return
+            if path == "/control/exec-python":
+                script = body.get("script")
+                if not isinstance(script, str) or not script.strip():
+                    raise ValueError("script must be a non-empty string")
+                timeout_ms = body.get("timeout_ms", 0)
+                if not isinstance(timeout_ms, int) or timeout_ms < 0 or timeout_ms > 3600000:
+                    raise ValueError("timeout_ms must be an integer in [0, 3600000]")
+                args = body.get("args") or {}
+                if not isinstance(args, dict):
+                    raise ValueError("args must be an object")
+                outcome = execute_python(script, args, timeout_ms)
+                if outcome["timed_out"]:
+                    self._send_json(
+                        408,
+                        {
+                            "success": False,
+                            "error": "exec timeout",
+                            "session_id": outcome["session_id"],
+                            "session_instance_id": outcome["session_instance_id"],
+                            "pid": outcome["pid"],
+                            "stdout": outcome["stdout"],
+                            "execution_ms": outcome["execution_ms"],
+                            "timed_out": True,
+                            "traceback": "",
+                        },
+                    )
+                else:
+                    self._send_json(
+                        200,
+                        {
+                            "success": not outcome["error"] and not outcome["timed_out"],
+                            **outcome,
+                        },
                     )
                 return
             self._send_json(404, {"success": False, "error": "not_found"})

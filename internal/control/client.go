@@ -48,6 +48,79 @@ func (c *Client) Post(ctx context.Context, route string, input, output any, expe
 	return c.do(request, output, expected)
 }
 
+// ExecPython runs a script on the IDA main thread. HTTP 200 means the script
+// completed (success may still be false on a script error); HTTP 408 means the
+// best-effort timeout fired and the result carries timed_out=true.
+func (c *Client) ExecPython(ctx context.Context, script string, args map[string]string, timeoutMs int) (*ExecResult, error) {
+	payload := map[string]any{"script": script}
+	if args != nil {
+		payload["args"] = args
+	}
+	if timeoutMs > 0 {
+		payload["timeout_ms"] = timeoutMs
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/control/exec-python", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+c.Token)
+	response, err := c.HTTP.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	var result ExecResult
+	if err := json.Unmarshal(responseBody, &result); err != nil {
+		return nil, fmt.Errorf("decode exec-python response: %w", err)
+	}
+	switch response.StatusCode {
+	case http.StatusOK:
+		return &result, nil
+	case http.StatusRequestTimeout:
+		result.TimedOut = true
+		if result.Error == "" {
+			result.Error = "exec timeout"
+		}
+		return &result, nil
+	default:
+		return nil, fmt.Errorf("control HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+}
+
+type ExecResult struct {
+	Success           bool            `json:"success"`
+	SessionID         string          `json:"session_id"`
+	SessionInstanceID string          `json:"session_instance_id"`
+	PID               int             `json:"pid"`
+	Stdout            string          `json:"stdout"`
+	Result            json.RawMessage `json:"result"`
+	Error             string          `json:"error"`
+	Traceback         string          `json:"traceback"`
+	ExecutionMS       float64         `json:"execution_ms"`
+	TimedOut          bool            `json:"timed_out"`
+}
+
+// ResultValue decodes the opaque result field, or returns nil when absent.
+func (r *ExecResult) ResultValue() (any, error) {
+	if len(r.Result) == 0 || string(r.Result) == "null" {
+		return nil, nil
+	}
+	var value any
+	if err := json.Unmarshal(r.Result, &value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
 func (c *Client) do(request *http.Request, output any, expected int) error {
 	request.Header.Set("Authorization", "Bearer "+c.Token)
 	response, err := c.HTTP.Do(request)
