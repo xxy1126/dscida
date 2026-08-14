@@ -198,6 +198,16 @@ expiry the script is interrupted when it returns to Python bytecode
 the session's `uncommitted_mcp_edits_possible` flag; nothing is persisted until
 an explicit `save`.
 
+## Agent skill document
+
+`skills/dscida/SKILL.md` is the canonical agent-facing manual: session
+management contract (slot naming, state, the save/stop/delete/--replace/--resume
+lifecycle decision table), the DSC module-add workflow, every built-in analysis
+command, the `exec` result contract with inline IDAPython template snippets, and
+diagnostics. It is host-agnostic (DeepSeek Harness, Claude Code, Codex, plain
+shell) and is not installed anywhere by default — copy it into a host's skills
+directory when needed (per-host paths in `AGENT-CLI-SPEC.md` §7).
+
 ## Persistence and recovery
 
 Each session contains:

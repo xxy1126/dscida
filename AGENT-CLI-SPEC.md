@@ -277,17 +277,21 @@ endpoint from session state on every invocation.
 
 ## 8. Milestones and branch
 
-Branch: `feat/analysis-cli` (created from `main`; the MCP/bridge code and the
-existing `use-dscida` Claude Code skill stay untouched on `main`).
+Branch: `feat/analysis-cli` (created from `main`; `main` keeps the legacy MCP
+bridge and the old `use-dscida` Claude Code skill).
 
-- **M1 — exec channel**: sidecar `/control/exec-python` (+ timeout, result contract,
-  `dscida_result`); `control.Client` method; `dscida exec` command; SPEC §11 clause
-  revision; tests (sidecar script-level + Go command-level).
-- **M2 — built-in commands**: `internal/assets/scripts/*.py` templates; one shared
-  Go runner; the built-in commands from Section 3 (read-only, modifying, `exec`);
-  `--json` outputs; tests.
-- **M3 — skill document**: `skills/dscida/SKILL.md` with full usage contract,
-  templates, and per-host placement notes; repository README section.
+Status:
+
+- **M1 — exec channel: DONE.** Sidecar `/control/exec-python` (+ timeout, result
+  contract, `dscida_result`); `control.Client` method; `dscida exec` command;
+  SPEC §11 clause revision; tests.
+- **M2 — built-in commands: DONE.** `internal/assets/scripts/*.py` templates; one
+  shared Go runner; all Section 3 commands; `--json` outputs; tests.
+- **M3 — skill document: DONE.** Canonical `skills/dscida/SKILL.md` (session
+  management contract, lifecycle decision table, DSC add workflow, analysis
+  commands, exec contract with inline template snippets, diagnostics). The old
+  `use-dscida-skill/` was removed in its favor; the document is not installed
+  into any host (see OQ-6).
 - **M4 — (deferred) job-async exec**: long-script execution through the existing job
   state machine (`202` + durable job + `dscida wait`); out of scope until M1–M3 land.
 
