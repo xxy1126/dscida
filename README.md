@@ -174,22 +174,22 @@ dscida exec SESSION --code 'print(hex(idaapi.get_imagebase()))'
 dscida exec SESSION --script /path/script.py --arg name=alice --timeout 2m
 
 # read-only analysis
-dscida survey SESSION
-dscida funcs SESSION --query Security --limit 20
-dscida decompile SESSION _main
-dscida disasm SESSION _main --count 20
-dscida xrefs SESSION 0x180123000
-dscida imports SESSION --query Security
-dscida string SESSION 0x180123000
-dscida bytes SESSION 0x180123000 --length 32
-dscida find SESSION --hex "cf fa ed fe" --count 5
-dscida find SESSION --text "Usage" --case-insensitive
+dscida analysis survey SESSION
+dscida analysis funcs SESSION --query Security --limit 20
+dscida analysis decompile SESSION _main
+dscida analysis disasm SESSION _main --count 20
+dscida analysis xrefs SESSION 0x180123000
+dscida analysis imports SESSION --query Security
+dscida analysis string SESSION 0x180123000
+dscida analysis bytes SESSION 0x180123000 --length 32
+dscida analysis find SESSION --hex "cf fa ed fe" --count 5
+dscida analysis find SESSION --text "Usage" --case-insensitive
 
 # modifying commands touch the live IDB; run `dscida save SESSION` to persist
-dscida rename SESSION _main my_func
-dscida comment SESSION _main "handled" --append
-dscida set-type SESSION _main "int my_func(int a);"
-dscida patch SESSION 0x180123000 9090
+dscida edit rename SESSION _main my_func
+dscida edit comment SESSION _main "handled" --append
+dscida edit set-type SESSION _main "int my_func(int a);"
+dscida edit patch SESSION 0x180123000 9090
 ```
 
 Scripts run synchronously on IDA's main thread with a best-effort timeout; on

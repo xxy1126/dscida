@@ -57,7 +57,7 @@ func TestExecSourceScript(t *testing.T) {
 }
 
 func TestBuiltinScriptTemplates(t *testing.T) {
-	for _, command := range analysisCommands {
+	for _, command := range append(append([]analysisCommand{}, analysisGroup...), editGroup...) {
 		template := command.template
 		if template == "" {
 			template = command.name + ".py"
@@ -80,5 +80,24 @@ func TestBuiltinScriptTemplates(t *testing.T) {
 	}
 	if _, err := assets.Script("common.py"); err != nil {
 		t.Fatalf("common.py: %v", err)
+	}
+}
+
+func TestAnalysisAndEditDispatch(t *testing.T) {
+	for _, command := range analysisGroup {
+		if command.modifies {
+			t.Fatalf("analysis group must be read-only: %s", command.name)
+		}
+		if _, ok := analysisByName[command.name]; !ok {
+			t.Fatalf("analysis %s missing from registry", command.name)
+		}
+	}
+	for _, command := range editGroup {
+		if !command.modifies {
+			t.Fatalf("edit group must modify: %s", command.name)
+		}
+		if _, ok := analysisByName[command.name]; !ok {
+			t.Fatalf("edit %s missing from registry", command.name)
+		}
 	}
 }

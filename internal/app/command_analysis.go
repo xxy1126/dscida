@@ -26,10 +26,11 @@ type analysisCommand struct {
 	vars      func(set *flag.FlagSet) (map[string]string, error)
 }
 
-var analysisCommands = []analysisCommand{
+// analysisGroup is the read-only analysis surface: `dscida analysis <sub>`.
+var analysisGroup = []analysisCommand{
 	{
 		name: "decompile", timeout: 120 * time.Second, extraArgs: 1,
-		usage: "dscida decompile <SESSION> <ADDR> [--cfg]",
+		usage: "dscida analysis decompile <SESSION> <ADDR> [--cfg]",
 		addFlags: func(set *flag.FlagSet) {
 			set.Bool("cfg", false, "include the control-flow-graph block list")
 		},
@@ -42,7 +43,7 @@ var analysisCommands = []analysisCommand{
 	},
 	{
 		name: "disasm", timeout: 60 * time.Second, extraArgs: 1,
-		usage: "dscida disasm <SESSION> <ADDR> [--count N] [--graph]",
+		usage: "dscida analysis disasm <SESSION> <ADDR> [--count N] [--graph]",
 		addFlags: func(set *flag.FlagSet) {
 			set.Int("count", 20, "instruction count")
 			set.Bool("graph", false, "include the function basic-block list")
@@ -57,7 +58,7 @@ var analysisCommands = []analysisCommand{
 	},
 	{
 		name: "funcs", timeout: 60 * time.Second,
-		usage: "dscida funcs <SESSION> [--query TEXT] [--limit N]",
+		usage: "dscida analysis funcs <SESSION> [--query TEXT] [--limit N]",
 		addFlags: func(set *flag.FlagSet) {
 			set.String("query", "", "case-insensitive name filter")
 			set.Int("limit", 0, "maximum results; 0 means all")
@@ -71,14 +72,14 @@ var analysisCommands = []analysisCommand{
 	},
 	{
 		name: "xrefs", timeout: 60 * time.Second, extraArgs: 1,
-		usage: "dscida xrefs <SESSION> <ADDR>",
+		usage: "dscida analysis xrefs <SESSION> <ADDR>",
 		vars: func(set *flag.FlagSet) (map[string]string, error) {
 			return map[string]string{"addr": set.Arg(1)}, nil
 		},
 	},
 	{
 		name: "imports", timeout: 60 * time.Second,
-		usage: "dscida imports <SESSION> [--query TEXT]",
+		usage: "dscida analysis imports <SESSION> [--query TEXT]",
 		addFlags: func(set *flag.FlagSet) {
 			set.String("query", "", "case-insensitive module name filter")
 		},
@@ -88,7 +89,7 @@ var analysisCommands = []analysisCommand{
 	},
 	{
 		name: "string", timeout: 60 * time.Second, extraArgs: 1,
-		usage: "dscida string <SESSION> <ADDR> [--length N]",
+		usage: "dscida analysis string <SESSION> <ADDR> [--length N]",
 		addFlags: func(set *flag.FlagSet) {
 			set.Int("length", 256, "maximum read length")
 		},
@@ -101,7 +102,7 @@ var analysisCommands = []analysisCommand{
 	},
 	{
 		name: "bytes", timeout: 60 * time.Second, extraArgs: 1,
-		usage: "dscida bytes <SESSION> <ADDR> [--length N] [--hex | --text]",
+		usage: "dscida analysis bytes <SESSION> <ADDR> [--length N] [--hex | --text]",
 		addFlags: func(set *flag.FlagSet) {
 			set.Int("length", 16, "byte count")
 			set.Bool("hex", false, "hex dump output")
@@ -126,7 +127,7 @@ var analysisCommands = []analysisCommand{
 	},
 	{
 		name: "find", timeout: 60 * time.Second,
-		usage: "dscida find <SESSION> (--hex HEX | --text TEXT) [--from ADDR] [--to ADDR] [--count N] [--case-insensitive]",
+		usage: "dscida analysis find <SESSION> (--hex HEX | --text TEXT) [--from ADDR] [--to ADDR] [--count N] [--case-insensitive]",
 		addFlags: func(set *flag.FlagSet) {
 			set.String("hex", "", "byte pattern as hex (e.g. DE AD BE EF)")
 			set.String("text", "", "UTF-8 text pattern")
@@ -153,21 +154,26 @@ var analysisCommands = []analysisCommand{
 	},
 	{
 		name: "survey", timeout: 60 * time.Second,
-		usage: "dscida survey <SESSION>",
+		usage: "dscida analysis survey <SESSION>",
 		vars: func(set *flag.FlagSet) (map[string]string, error) {
 			return nil, nil
 		},
 	},
+}
+
+// editGroup is the IDB-modifying surface: `dscida edit <sub>`. Changes touch
+// only the live IDB and require an explicit `save` to persist.
+var editGroup = []analysisCommand{
 	{
 		name: "rename", timeout: 30 * time.Second, modifies: true, extraArgs: 2,
-		usage: "dscida rename <SESSION> <ADDR> <NAME>",
+		usage: "dscida edit rename <SESSION> <ADDR> <NAME>",
 		vars: func(set *flag.FlagSet) (map[string]string, error) {
 			return map[string]string{"addr": set.Arg(1), "name": set.Arg(2)}, nil
 		},
 	},
 	{
 		name: "comment", timeout: 30 * time.Second, modifies: true, extraArgs: 2,
-		usage: "dscida comment <SESSION> <ADDR> <TEXT> [--append]",
+		usage: "dscida edit comment <SESSION> <ADDR> <TEXT> [--append]",
 		addFlags: func(set *flag.FlagSet) {
 			set.Bool("append", false, "append to the existing comment")
 		},
@@ -182,14 +188,14 @@ var analysisCommands = []analysisCommand{
 	{
 		name: "set-type", timeout: 30 * time.Second, modifies: true, extraArgs: 2,
 		template: "set_type.py",
-		usage: "dscida set-type <SESSION> <ADDR> <TYPE>",
+		usage: "dscida edit set-type <SESSION> <ADDR> <TYPE>",
 		vars: func(set *flag.FlagSet) (map[string]string, error) {
 			return map[string]string{"addr": set.Arg(1), "type": set.Arg(2)}, nil
 		},
 	},
 	{
 		name: "patch", timeout: 30 * time.Second, modifies: true, extraArgs: 2,
-		usage: "dscida patch <SESSION> <ADDR> <HEX>",
+		usage: "dscida edit patch <SESSION> <ADDR> <HEX>",
 		vars: func(set *flag.FlagSet) (map[string]string, error) {
 			return map[string]string{"addr": set.Arg(1), "hex": set.Arg(2)}, nil
 		},
@@ -197,8 +203,11 @@ var analysisCommands = []analysisCommand{
 }
 
 var analysisByName = func() map[string]analysisCommand {
-	result := make(map[string]analysisCommand, len(analysisCommands))
-	for _, command := range analysisCommands {
+	result := make(map[string]analysisCommand, len(analysisGroup)+len(editGroup))
+	for _, command := range analysisGroup {
+		result[command.name] = command
+	}
+	for _, command := range editGroup {
 		result[command.name] = command
 	}
 	return result
@@ -233,6 +242,32 @@ func builtinScript(name string, vars map[string]string) (string, error) {
 		return "", err
 	}
 	return "dscida_args = " + string(encoded) + "\n" + common + "\n" + body, nil
+}
+
+// analysisCmd dispatches `dscida analysis <sub> ...` to the read-only group.
+func (e *environment) analysisCmd(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: dscida analysis <decompile|disasm|funcs|xrefs|imports|string|bytes|find|survey> <SESSION> [...]")
+	}
+	name := args[0]
+	spec, ok := analysisByName[name]
+	if !ok || spec.modifies {
+		return fmt.Errorf("unknown analysis command %q (run dscida analysis)", name)
+	}
+	return e.analysisHandler(name)(args[1:])
+}
+
+// editCmd dispatches `dscida edit <sub> ...` to the modifying group.
+func (e *environment) editCmd(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: dscida edit <rename|comment|set-type|patch> <SESSION> [...]")
+	}
+	name := args[0]
+	spec, ok := analysisByName[name]
+	if !ok || !spec.modifies {
+		return fmt.Errorf("unknown edit command %q (run dscida edit)", name)
+	}
+	return e.analysisHandler(name)(args[1:])
 }
 
 func (e *environment) analysisHandler(name string) func(args []string) error {

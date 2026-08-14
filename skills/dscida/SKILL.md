@@ -29,8 +29,8 @@ DSCIDA_BIN=/path/to/dscida
 | `stop <SESSION> [--no-save]` | Shut down IDA (pause the session) |
 | `delete <SESSION> [--include-backups]` | Remove a stopped session (quarantined, recoverable) |
 | `logs <SESSION>` | Tail supervisor / IDA logs |
-| `survey/decompile/disasm/funcs/xrefs/imports/string/bytes/find` | Built-in analysis (Section 4) |
-| `rename/comment/set-type/patch` | Built-in modifications (Section 4) |
+| `analysis <decompile\|disasm\|funcs\|xrefs\|imports\|string\|bytes\|find\|survey>` | Built-in read-only analysis (Section 4) |
+| `edit <rename\|comment\|set-type\|patch>` | Built-in IDB modifications, persisted via `save` (Section 4) |
 | `exec <SESSION> (--code \| --script)` | Run arbitrary IDAPython (Section 5) |
 | `wait <JOB_ID>` | Wait for a background mutation (`add --no-wait`) |
 | `doctor [--probe]` | Environment diagnostics |
@@ -152,16 +152,16 @@ outputs always print addresses as hexadecimal strings.
 ### 4.2 Read-only analysis
 
 ```bash
-"$DSCIDA_BIN" survey "$SESSION_ID" --json          # overview: base, processor, segments, funcs, entries
-"$DSCIDA_BIN" funcs "$SESSION_ID" --query Security --limit 20
-"$DSCIDA_BIN" decompile "$SESSION_ID" _main         # Hex-Rays pseudocode (--cfg for block list)
-"$DSCIDA_BIN" disasm "$SESSION_ID" _main --count 20
-"$DSCIDA_BIN" xrefs "$SESSION_ID" 0x180123000       # code+data refs to an address
-"$DSCIDA_BIN" imports "$SESSION_ID" --query libobjc
-"$DSCIDA_BIN" string "$SESSION_ID" 0x180123000
-"$DSCIDA_BIN" bytes "$SESSION_ID" 0x180123000 --length 32   # --text for raw text
-"$DSCIDA_BIN" find "$SESSION_ID" --hex "cf fa ed fe" --count 5
-"$DSCIDA_BIN" find "$SESSION_ID" --text "Usage" --case-insensitive
+"$DSCIDA_BIN" analysis survey "$SESSION_ID" --json          # overview: base, processor, segments, funcs, entries
+"$DSCIDA_BIN" analysis funcs "$SESSION_ID" --query Security --limit 20
+"$DSCIDA_BIN" analysis decompile "$SESSION_ID" _main         # Hex-Rays pseudocode (--cfg for block list)
+"$DSCIDA_BIN" analysis disasm "$SESSION_ID" _main --count 20
+"$DSCIDA_BIN" analysis xrefs "$SESSION_ID" 0x180123000       # code+data refs to an address
+"$DSCIDA_BIN" analysis imports "$SESSION_ID" --query libobjc
+"$DSCIDA_BIN" analysis string "$SESSION_ID" 0x180123000
+"$DSCIDA_BIN" analysis bytes "$SESSION_ID" 0x180123000 --length 32   # --text for raw text
+"$DSCIDA_BIN" analysis find "$SESSION_ID" --hex "cf fa ed fe" --count 5
+"$DSCIDA_BIN" analysis find "$SESSION_ID" --text "Usage" --case-insensitive
 ```
 
 ### 4.3 Modifying commands
@@ -170,10 +170,10 @@ Modifications write to the **live IDB only**; nothing is persisted until an
 explicit `save` (which also clears the session's uncommitted-edits flag).
 
 ```bash
-"$DSCIDA_BIN" rename "$SESSION_ID" _main my_func
-"$DSCIDA_BIN" comment "$SESSION_ID" _main "handled" --append
-"$DSCIDA_BIN" set-type "$SESSION_ID" _main "int my_func(int a);"   # function prototypes; data items may need an existing definition
-"$DSCIDA_BIN" patch "$SESSION_ID" 0x180123000 9090
+"$DSCIDA_BIN" edit rename "$SESSION_ID" _main my_func
+"$DSCIDA_BIN" edit comment "$SESSION_ID" _main "handled" --append
+"$DSCIDA_BIN" edit set-type "$SESSION_ID" _main "int my_func(int a);"   # function prototypes; data items may need an existing definition
+"$DSCIDA_BIN" edit patch "$SESSION_ID" 0x180123000 9090
 ```
 
 ## 5. exec — arbitrary IDAPython

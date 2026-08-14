@@ -93,15 +93,15 @@ All built-in commands accept `<SESSION>` first and a canonical `<ADDR>` argument
 
 | Command | Description | v1 MCP analogue |
 |---|---|---|
-| `dscida decompile <SESSION> <ADDR> [--cfg]` | Hex-Rays decompilation of the function at/containing ADDR. `--cfg` adds the control-flow-graph section. | `decompile` |
-| `dscida disasm <SESSION> <ADDR> [--count N] [--graph]` | Disassemble N instructions starting at ADDR (default 20). | `disasm` |
-| `dscida funcs <SESSION> [--query TEXT] [--limit N]` | List functions; optional case-insensitive name filter. | `list_funcs` |
-| `dscida xrefs <SESSION> <ADDR>` | Code/data references to ADDR, with direction and type. | `xrefs_to` |
-| `dscida imports <SESSION> [--query TEXT]` | Import table; optional module/name filter. | `imports` |
-| `dscida string <SESSION> <ADDR> [--length N]` | Read a C string at ADDR (N defaults to null-terminated). | `get_string` |
-| `dscida bytes <SESSION> <ADDR> [--length N] [--hex \| --text]` | Read raw bytes at ADDR (default hex dump, N=16). | `get_bytes` |
-| `dscida find <SESSION> (--hex HEX \| --text TEXT) [--from ADDR] [--to ADDR] [--count N] [--case-insensitive]` | Search the binary for a byte pattern or ASCII/UTF-8 text within an optional address range; returns matching addresses (first N, default all). | `find_bytes`, `find` |
-| `dscida survey <SESSION>` | Binary/session overview: architecture, entry point, segments, function count, imports count, loader and processor, target kind and generation. | `survey_binary` |
+| `dscida analysis decompile <SESSION> <ADDR> [--cfg]` | Hex-Rays decompilation of the function at/containing ADDR. `--cfg` adds the control-flow-graph section. | `decompile` |
+| `dscida analysis disasm <SESSION> <ADDR> [--count N] [--graph]` | Disassemble N instructions starting at ADDR (default 20). | `disasm` |
+| `dscida analysis funcs <SESSION> [--query TEXT] [--limit N]` | List functions; optional case-insensitive name filter. | `list_funcs` |
+| `dscida analysis xrefs <SESSION> <ADDR>` | Code/data references to ADDR, with direction and type. | `xrefs_to` |
+| `dscida analysis imports <SESSION> [--query TEXT]` | Import table; optional module/name filter. | `imports` |
+| `dscida analysis string <SESSION> <ADDR> [--length N]` | Read a C string at ADDR (N defaults to null-terminated). | `get_string` |
+| `dscida analysis bytes <SESSION> <ADDR> [--length N] [--hex \| --text]` | Read raw bytes at ADDR (default hex dump, N=16). | `get_bytes` |
+| `dscida analysis find <SESSION> (--hex HEX \| --text TEXT) [--from ADDR] [--to ADDR] [--count N] [--case-insensitive]` | Search the binary for a byte pattern or ASCII/UTF-8 text within an optional address range; returns matching addresses (first N, default all). | `find_bytes`, `find` |
+| `dscida analysis survey <SESSION>` | Binary/session overview: architecture, entry point, segments, function count, imports count, loader and processor, target kind and generation. | `survey_binary` |
 
 ### 3.2 Modifying commands
 
@@ -112,10 +112,10 @@ generation; `dscida save` is required to persist. The session's
 
 | Command | Description | v1 MCP analogue |
 |---|---|---|
-| `dscida rename <SESSION> <ADDR> <NAME>` | Rename the function/global at ADDR. | `rename` |
-| `dscida comment <SESSION> <ADDR> <TEXT> [--append]` | Set (or append to) the comment at ADDR. | `set_comments`, `append_comments` |
-| `dscida set-type <SESSION> <ADDR> <TYPE>` | Declare/set the type at ADDR (function or data). | `set_type` |
-| `dscida patch <SESSION> <ADDR> <HEX> [--length N]` | Write raw bytes (hex string) at ADDR into the live IDB. Patching is a live-IDB mutation like the others: it is visible to later analysis but is not persisted until `save`. Assembly-level patching (`patch_asm`) stays deferred. | `patch` |
+| `dscida edit rename <SESSION> <ADDR> <NAME>` | Rename the function/global at ADDR. | `rename` |
+| `dscida edit comment <SESSION> <ADDR> <TEXT> [--append]` | Set (or append to) the comment at ADDR. | `set_comments`, `append_comments` |
+| `dscida edit set-type <SESSION> <ADDR> <TYPE>` | Declare/set the type at ADDR (function or data). | `set_type` |
+| `dscida edit patch <SESSION> <ADDR> <HEX> [--length N]` | Write raw bytes (hex string) at ADDR into the live IDB. Patching is a live-IDB mutation like the others: it is visible to later analysis but is not persisted until `save`. Assembly-level patching (`patch_asm`) stays deferred. | `patch` |
 
 ### 3.3 General execution
 
