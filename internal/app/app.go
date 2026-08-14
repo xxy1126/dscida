@@ -53,6 +53,8 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return env.save(args[1:])
 	case "stop":
 		return env.stop(args[1:])
+	case "delete":
+		return env.delete(args[1:])
 	case "logs":
 		return env.logs(args[1:])
 	case "exec":
@@ -82,6 +84,7 @@ Usage:
   dscida wait <JOB_ID> [--timeout DURATION]
   dscida save <SESSION>
   dscida stop <SESSION> [--no-save]
+  dscida delete <SESSION> [--include-backups]
   dscida logs <SESSION> [--component COMPONENT]
   dscida exec <SESSION> (--code CODE | --script FILE) [--arg K=V] [--timeout DURATION]
   dscida survey <SESSION>

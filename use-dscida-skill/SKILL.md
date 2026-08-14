@@ -152,6 +152,22 @@ committed generation. It does not remove the session directory.
 Do not kill the IDA PID directly unless `stop` has failed and the user asks
 for recovery. Direct termination can leave stale session state.
 
+## Delete a slot
+
+`stop` pauses; `delete` removes the session from the active namespace. It only
+accepts a durably stopped session and quarantines it (recoverably) beneath
+`<state-root>/trash/` rather than erasing it:
+
+```bash
+"$DSCIDA_BIN" stop "$SESSION_ID" --no-save
+"$DSCIDA_BIN" delete "$SESSION_ID" --json
+"$DSCIDA_BIN" delete "$SESSION_ID" --include-backups --json  # also remove --replace backups
+```
+
+Deleting frees the session name: a later `start --session "$SESSION_ID"` needs
+no `--replace`. Use `stop` instead when the analysis should be resumable later
+with `--resume`.
+
 ## Diagnose failures
 
 Use structured status first, then component logs:

@@ -88,7 +88,19 @@ DSCIDA_HOME/sessions/<id>/
   staging/              snapshot candidates and validator working dirs
   recovery/             prior runtime artifacts saved during rollback
   logs/                 idat stdout/stderr, IDA message log, supervisor log
+
+DSCIDA_HOME/
+  sessions/             active sessions (one directory per logical session)
+  trash/                quarantined deleted sessions (recoverable, not erased)
+  delete-audit.jsonl    redacted deletion audit trail (0600, appended)
 ```
+
+`stop` pauses a session (frees IDA, keeps generations for `--resume`);
+`delete` requires a durably stopped session (pid 0, empty endpoints, no active
+jobs) and moves it into `trash/`; `--include-backups` also quarantines verified
+`--replace` backups (validated via `backup.json` markers or legacy
+`session.json` identity). Deleting frees the session name so a later
+`start --session ID` needs no `--replace`.
 
 ## Environment variables
 

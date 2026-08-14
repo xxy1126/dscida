@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -198,6 +199,13 @@ func New(root string) (*Store, error) {
 	}
 	if err := ensurePrivateDirectory(sessions); err != nil {
 		return nil, fmt.Errorf("sessions root: %w", err)
+	}
+	trash := filepath.Join(absolute, "trash")
+	if err := os.Mkdir(trash, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	if err := ensurePrivateDirectory(trash); err != nil {
+		return nil, fmt.Errorf("trash root: %w", err)
 	}
 	return &Store{Root: absolute}, nil
 }
@@ -719,7 +727,246 @@ func (s *Store) BackupSession(session *Session) (string, error) {
 	if err := SyncDir(filepath.Dir(source)); err != nil {
 		return "", err
 	}
+	marker := map[string]any{
+		"schema_version":      1,
+		"session_id":          session.SessionID,
+		"session_instance_id": session.SessionInstanceID,
+		"created_at":          time.Now().UTC().Format(time.RFC3339Nano),
+		"reason":              "replace",
+	}
+	if err := WriteJSON(filepath.Join(destination, "backup.json"), marker, 0o600); err != nil {
+		return destination, fmt.Errorf("write backup marker: %w", err)
+	}
 	return destination, nil
+}
+
+// Delete errors. The caller (app layer) holds the lifecycle lock while calling.
+var (
+	ErrSessionDeleteUnsafe = errors.New("session_delete_unsafe")
+	ErrSessionDeleteNone   = errors.New("session_not_found: no current session or verified backup")
+)
+
+// DeletePathState is the per-path outcome of one quarantine rename.
+type DeletePathState struct {
+	Name         string `json:"name"`
+	Source       string `json:"source"`
+	Dest         string `json:"dest"`
+	LegacyBackup bool   `json:"legacy_backup,omitempty"`
+	State        string `json:"state"` // quarantined | rolled_back | not_moved | rollback_failed
+}
+
+// DeleteResult reports a quarantine batch.
+type DeleteResult struct {
+	SessionID             string            `json:"session_id"`
+	CurrentMoved          bool              `json:"current_moved"`
+	Sources               []DeletePathState `json:"sources"`
+	TrashDir              string            `json:"trash_dir"`
+	MCPRegistrationChanged bool             `json:"mcp_registration_changed"`
+}
+
+var backupNameRe = regexp.MustCompile(`-backup-\d{8}T\d{6}\.\d{9}Z$`)
+
+type deleteMove struct {
+	state   DeletePathState
+	legacy  bool
+	done    bool
+}
+
+// DeleteSession quarantines a durably stopped session (and optionally its
+// verified --replace backups) beneath <root>/trash/ with same-filesystem
+// renames. Preconditions (checked here): the session must be durably stopped
+// with pid 0, empty endpoints, and no active jobs; every selected directory is
+// re-verified as a real 0700 current-user-owned directory before moving. The
+// current session is moved last; failures best-effort roll back earlier moves.
+// The caller must hold the per-session lifecycle lock.
+func (s *Store) DeleteSession(session *Session, includeBackups bool) (*DeleteResult, error) {
+	if session.State != "stopped" || session.IDAPID != 0 ||
+		session.ControlURL != "" || session.MCPURL != "" || len(session.ActiveJobIDs) != 0 {
+		return nil, fmt.Errorf(
+			"%w: session %s is not durably stopped (state=%s pid=%d); run `dscida stop %s --no-save` first",
+			ErrSessionDeleteUnsafe, session.SessionID, session.State, session.IDAPID, session.SessionID,
+		)
+	}
+	id := session.SessionID
+	if !ValidID(id) {
+		return nil, fmt.Errorf("%w: invalid session ID %q", ErrSessionDeleteUnsafe, id)
+	}
+	timestamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+	trash := filepath.Join(s.Root, "trash")
+
+	// Collect and preflight every source.
+	var moves []deleteMove
+	appendMove := func(source, name string, legacy bool) error {
+		if !within(filepath.Join(s.Root, "sessions"), source) {
+			return fmt.Errorf("%w: source outside sessions root", ErrSessionDeleteUnsafe)
+		}
+		info, err := os.Lstat(source)
+		if err != nil {
+			return fmt.Errorf("%w: inspect source %s: %v", ErrSessionDeleteUnsafe, name, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%w: %s is not a real directory", ErrSessionDeleteUnsafe, name)
+		}
+		if stat, ok := info.Sys().(*syscall.Stat_t); !ok || int(stat.Uid) != os.Getuid() {
+			return fmt.Errorf("%w: %s is not owned by the current user", ErrSessionDeleteUnsafe, name)
+		}
+		if info.Mode().Perm() != 0o700 {
+			return fmt.Errorf("%w: %s mode is %o, expected 0700", ErrSessionDeleteUnsafe, name, info.Mode().Perm())
+		}
+		dest := filepath.Join(trash, name+"-deleted-"+timestamp)
+		if _, err := os.Lstat(dest); err == nil {
+			return fmt.Errorf("%w: destination already exists: %s", ErrSessionDeleteUnsafe, dest)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		moves = append(moves, deleteMove{
+			state:  DeletePathState{Name: name, Source: source, Dest: dest, LegacyBackup: legacy},
+			legacy: legacy,
+		})
+		return nil
+	}
+
+	if includeBackups {
+		entries, err := os.ReadDir(filepath.Join(s.Root, "sessions"))
+		if err != nil {
+			return nil, err
+		}
+		var candidates []string
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), id+"-backup-") && backupNameRe.MatchString(entry.Name()) {
+				candidates = append(candidates, entry.Name())
+			}
+		}
+		sort.Strings(candidates)
+		for _, name := range candidates {
+			legacy, err := s.verifyBackup(id, name)
+			if err != nil {
+				return nil, err
+			}
+			if err := appendMove(filepath.Join(s.Root, "sessions", name), name, legacy); err != nil {
+				return nil, err
+			}
+		}
+	}
+	currentName := id
+	currentIndex := -1
+	if _, err := os.Lstat(s.SessionDir(id)); err == nil {
+		if err := appendMove(s.SessionDir(id), currentName, false); err != nil {
+			return nil, err
+		}
+		currentIndex = len(moves) - 1
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if len(moves) == 0 {
+		return nil, ErrSessionDeleteNone
+	}
+
+	result := &DeleteResult{
+		SessionID:              id,
+		TrashDir:               trash,
+		MCPRegistrationChanged: false,
+	}
+	// Move backups first (lexical order), the exact current session last.
+	for index := range moves {
+		move := &moves[index]
+		move.state.State = "not_moved"
+		result.Sources = append(result.Sources, move.state)
+	}
+	rollback := func() {
+		for index := len(moves) - 1; index >= 0; index-- {
+			move := &moves[index]
+			if !move.done {
+				continue
+			}
+			if err := os.Rename(move.state.Dest, move.state.Source); err != nil {
+				move.state.State = "rollback_failed"
+				_ = SyncDir(trash)
+				_ = SyncDir(filepath.Join(s.Root, "sessions"))
+				continue
+			}
+			move.state.State = "rolled_back"
+			_ = SyncDir(trash)
+			_ = SyncDir(filepath.Join(s.Root, "sessions"))
+		}
+	}
+	for index := range moves {
+		move := &moves[index]
+		if err := os.Rename(move.state.Source, move.state.Dest); err != nil {
+			move.state.State = "not_moved"
+			rollback()
+			return result, fmt.Errorf("delete %s: %w (rolled back)", move.state.Name, err)
+		}
+		move.done = true
+		move.state.State = "quarantined"
+		if err := SyncDir(filepath.Join(s.Root, "sessions")); err != nil {
+			rollback()
+			return result, fmt.Errorf("fsync sessions after %s: %w (rolled back)", move.state.Name, err)
+		}
+		if err := SyncDir(trash); err != nil {
+			rollback()
+			return result, fmt.Errorf("fsync trash after %s: %w (rolled back)", move.state.Name, err)
+		}
+	}
+	for index := range moves {
+		result.Sources[index] = moves[index].state
+	}
+	result.CurrentMoved = currentIndex >= 0 && moves[currentIndex].done
+	return result, nil
+}
+
+// verifyBackup checks that a candidate backup directory belongs to session id:
+// a backup.json marker (when present) or, for legacy backups, session.json must
+// declare the matching session_id. Returns legacy=true for unmarked backups.
+func (s *Store) verifyBackup(id, name string) (bool, error) {
+	dir := filepath.Join(s.Root, "sessions", name)
+	var marker struct {
+		SessionID string `json:"session_id"`
+		Reason    string `json:"reason"`
+	}
+	if err := ReadJSON(filepath.Join(dir, "backup.json"), &marker); err == nil {
+		if marker.SessionID != id || marker.Reason != "replace" {
+			return false, fmt.Errorf("%w: backup %s marker does not match session %s", ErrSessionDeleteUnsafe, name, id)
+		}
+		var session Session
+		if err := ReadJSON(filepath.Join(dir, "session.json"), &session); err != nil {
+			return false, fmt.Errorf("%w: backup %s session metadata unreadable", ErrSessionDeleteUnsafe, name)
+		}
+		if session.SessionID != id {
+			return false, fmt.Errorf("%w: backup %s session identity mismatch", ErrSessionDeleteUnsafe, name)
+		}
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("%w: read backup marker %s: %v", ErrSessionDeleteUnsafe, name, err)
+	}
+	// Legacy backup: session.json only.
+	var session Session
+	if err := ReadJSON(filepath.Join(dir, "session.json"), &session); err != nil {
+		return false, fmt.Errorf("%w: legacy backup %s session metadata unreadable", ErrSessionDeleteUnsafe, name)
+	}
+	if session.SessionID != id {
+		return false, fmt.Errorf("%w: legacy backup %s session identity mismatch", ErrSessionDeleteUnsafe, name)
+	}
+	return true, nil
+}
+
+// AppendDeleteAudit appends a redacted audit event to <root>/delete-audit.jsonl
+// and fsyncs it. Events never contain control tokens.
+func (s *Store) AppendDeleteAudit(event map[string]any) error {
+	path := filepath.Join(s.Root, "delete-audit.jsonl")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(append(payload, '\n')); err != nil {
+		return err
+	}
+	return file.Sync()
 }
 
 func (s *Store) PrepareResume(session *Session) (*Current, error) {

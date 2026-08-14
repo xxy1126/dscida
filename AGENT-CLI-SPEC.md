@@ -71,6 +71,7 @@ Management commands (all already implemented in v1, listed here as the agent con
 | `dscida add <SESSION> --module <PATH>` | Load another DSC image into the same IDB |
 | `dscida save <SESSION>` | Commit the live IDB as a new verified generation |
 | `dscida stop <SESSION> [--no-save]` | Shut down IDA (optionally discarding changes) |
+| `dscida delete <SESSION> [--include-backups]` | Quarantine a durably stopped session (and optionally its `--replace` backups) beneath `<root>/trash/`; frees the session name |
 | `dscida logs <SESSION> [--component ...]` | Tail supervisor/IDA logs |
 
 Multi-session workflow contract for agents:

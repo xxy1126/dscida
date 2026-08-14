@@ -132,6 +132,22 @@ dscida start /path/to/dyld_shared_cache_arm64e \
   --resume
 ```
 
+`stop` is a pause: it shuts down IDA, frees memory, and keeps the verified
+generations so `--resume` can continue later without re-running analysis. To
+remove a session entirely, `delete` quarantines it (recoverably) beneath
+`<state-root>/trash/` instead of erasing it:
+
+```bash
+dscida stop SESSION --no-save
+dscida delete SESSION               # move the stopped session into trash/
+dscida delete SESSION --include-backups   # also quarantine --replace backups
+```
+
+`delete` only accepts a durably stopped session (pid 0, no active jobs) and
+fails closed otherwise; the quarantined directory can be recovered manually
+while no session with that name exists. Deleting a session frees its name, so a
+later `start --session SESSION` no longer needs `--replace`.
+
 For a standalone session:
 
 ```bash
@@ -197,6 +213,9 @@ logs/          supervisor and IDA logs
 current.json   SHA256-authenticated generation pointer
 session.json   orchestration state
 ```
+
+Deleted sessions are quarantined (not erased) beneath `<state-root>/trash/`;
+`delete-audit.jsonl` at the state root records every deletion attempt.
 
 Every successful start, add, and save snapshots the live IDB, reopens a copy
 in a separate headless validator, independently verifies its target identity,
