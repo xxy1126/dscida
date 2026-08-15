@@ -53,12 +53,16 @@ func Run(args []string, stdout, stderr io.Writer) error {
 		return env.save(args[1:])
 	case "stop":
 		return env.stop(args[1:])
-	case "mcp":
-		return env.mcp(args[1:])
-	case "claude":
-		return env.claude(args[1:])
+	case "delete":
+		return env.delete(args[1:])
 	case "logs":
 		return env.logs(args[1:])
+	case "exec":
+		return env.exec(args[1:])
+	case "analysis":
+		return env.analysisCmd(args[1:])
+	case "edit":
+		return env.editCmd(args[1:])
 	case "doctor":
 		return env.doctor(args[1:])
 	default:
@@ -81,11 +85,11 @@ Usage:
   dscida wait <JOB_ID> [--timeout DURATION]
   dscida save <SESSION>
   dscida stop <SESSION> [--no-save]
-  dscida mcp <SESSION> [--stdio] [--follow] [--server-name NAME]
-  dscida claude install <SESSION> [--name NAME] [--scope local]
-  dscida claude remove <SERVER_NAME> --scope <local|project|user>
-  dscida claude list [--project-dir PATH] [--json]
+  dscida delete <SESSION> [--include-backups]
   dscida logs <SESSION> [--component COMPONENT]
+  dscida exec <SESSION> (--code CODE | --script FILE) [--arg K=V] [--timeout DURATION]
+  dscida analysis <decompile|disasm|funcs|xrefs|imports|string|bytes|find|survey> <SESSION> [flags]
+  dscida edit <rename|comment|set-type|patch> <SESSION> [flags]
   dscida doctor [--probe]
   dscida doctor --probe-dsc --dsc <DSC> --module <PATH> [--add-module <PATH>]
 
